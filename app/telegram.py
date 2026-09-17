@@ -57,6 +57,7 @@ _HELP_REPLY = (
     "/forget <number> — delete one of them (numbers come from /recent)\n"
     "/find <words> — search your memories without spending a model call\n"
     "/reminders — what is still going to fire\n"
+    "/cancel <number> — call one of them off\n"
     "/status — how much I'm holding, and when I last backed up\n"
     "/backup — snapshot the database to this chat right now\n"
     "/chatid — show this chat's id (for OWNER_CHAT_ID)"
@@ -211,6 +212,28 @@ async def handle_reminders(
     )
 
 
+async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel a pending reminder by the number shown in /reminders."""
+    message = update.effective_message
+    if message is None:
+        return
+    args = context.args or []
+    if len(args) != 1 or not args[0].lstrip("-").isdigit():
+        await message.reply_text(
+            "Use /cancel <number>, with a number from /reminders."
+        )
+        return
+    cancelled = await asyncio.to_thread(
+        memory.cancel_reminder, message.chat_id, int(args[0])
+    )
+    if cancelled is None:
+        await message.reply_text(
+            "No waiting reminder with that number — check /reminders."
+        )
+        return
+    await message.reply_text(f"Cancelled: {_shorten(cancelled, 80)}")
+
+
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """How much is stored, and whether the backup safety net is armed."""
     message = update.effective_message
@@ -311,6 +334,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("forget", handle_forget))
     application.add_handler(CommandHandler("find", handle_find))
     application.add_handler(CommandHandler("reminders", handle_reminders))
+    application.add_handler(CommandHandler("cancel", handle_cancel))
     application.add_handler(CommandHandler("status", handle_status))
     application.add_handler(CommandHandler("backup", handle_backup))
     application.add_handler(

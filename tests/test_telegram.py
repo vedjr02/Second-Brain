@@ -180,8 +180,8 @@ def test_build_application_registers_handlers() -> None:
     settings = _settings()
     application = build_application(settings)
     group_zero = application.handlers[0]
-    # 9 commands + the text handler + the non-text handler
-    assert len(group_zero) == 11
+    # 10 commands + the text handler + the non-text handler
+    assert len(group_zero) == 12
     assert application.bot_data["settings"] is settings
     assert application.updater is None  # webhook mode: no polling updater
 
@@ -379,3 +379,40 @@ async def test_reminders_says_so_when_there_are_none(
     await telegram_module.handle_reminders(update, _context())
 
     assert bot.send_message.await_args.kwargs["text"] == "No reminders waiting."
+
+
+async def test_cancel_removes_a_pending_reminder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled: list[tuple[int, int]] = []
+
+    def fake_cancel(chat_id: int, reminder_id: int) -> str:
+        cancelled.append((chat_id, reminder_id))
+        return "Call the dentist"
+
+    monkeypatch.setattr(telegram_module.memory, "cancel_reminder", fake_cancel)
+    bot = AsyncMock()
+    update = _text_update("/cancel 3", bot)
+    context = _context()
+    context.args = ["3"]
+
+    await telegram_module.handle_cancel(update, context)
+
+    assert cancelled == [(42, 3)]
+    assert "Cancelled: Call the dentist" in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_cancel_with_an_unknown_number_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        telegram_module.memory, "cancel_reminder", lambda chat_id, rid: None
+    )
+    bot = AsyncMock()
+    update = _text_update("/cancel 99", bot)
+    context = _context()
+    context.args = ["99"]
+
+    await telegram_module.handle_cancel(update, context)
+
+    assert "No waiting reminder" in bot.send_message.await_args.kwargs["text"]
