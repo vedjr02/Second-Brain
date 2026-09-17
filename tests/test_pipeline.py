@@ -96,6 +96,7 @@ class FakeMemory:
         self.search_results: list[tuple[str, float]] = []
         self.saved_day: str | None = None
         self.updated_content: list[tuple[int, str]] = []
+        self.media_pointer: Any = None
 
     def save_message(self, **kwargs: Any) -> int:
         self.saved.append(kwargs)
@@ -133,6 +134,9 @@ class FakeMemory:
 
     def update_message_content(self, message_id: int, raw_content_text: str) -> None:
         self.updated_content.append((message_id, raw_content_text))
+
+    def media_for_chunk_text(self, chat_id: int, chunk_text: str) -> Any:
+        return self.media_pointer
 
 
 @pytest.fixture(autouse=True)
@@ -762,3 +766,37 @@ async def test_a_long_note_is_stored_as_several_retrievable_chunks(
     assert len(memory.chunks) > 1
     assert any("Point 100" in chunk["text"] for chunk in memory.chunks)
     assert _reply_text(update, _bot) == "Saved."
+
+
+async def test_an_answer_from_a_photo_sends_the_photo_back(
+    fakes: tuple[FakeGemini, FakeMemory],
+) -> None:
+    from app.memory import MediaPointer
+
+    gemini, memory = fakes
+    gemini._classification = Classification("question", "s", [], [], None)
+    memory.search_results = [("a screenshot of a pasta recipe", 0.9)]
+    memory.media_pointer = MediaPointer("photo-file-1", "photo")
+    update, bot = _text_update("what was that pasta photo?")
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    assert bot.send_photo.await_args.kwargs["photo"] == "photo-file-1"
+
+
+async def test_a_text_only_answer_sends_no_media(
+    fakes: tuple[FakeGemini, FakeMemory],
+) -> None:
+    gemini, memory = fakes
+    gemini._classification = Classification("question", "s", [], [], None)
+    memory.search_results = [("the spare key is under the mat", 0.9)]
+    memory.media_pointer = None
+    update, bot = _text_update("where is the key?")
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    assert bot.send_photo.await_count == 0

@@ -186,6 +186,35 @@ async def _answer_question(
     chunks = [chunk for chunk, _similarity in results]
     answer = await asyncio.to_thread(llm.answer, text, chunks)
     await message.reply_text(answer)
+    if chunks:
+        await _send_source_media(message, chat_id, chunks[0])
+
+
+async def _send_source_media(
+    message: Message, chat_id: int, best_chunk: str
+) -> None:
+    """Hand back the original file when the answer came from media.
+
+    "What was that recipe photo?" should show the photo, not just describe it.
+    Telegram still holds the file; the database only ever kept the pointer, so
+    this costs nothing but a re-send of a file_id.
+    """
+    pointer = await asyncio.to_thread(
+        memory.media_for_chunk_text, chat_id, best_chunk
+    )
+    if pointer is None:
+        return
+    try:
+        if pointer.raw_type == "photo":
+            await message.reply_photo(pointer.file_id)
+        elif pointer.raw_type == "video":
+            await message.reply_video(pointer.file_id)
+        elif pointer.raw_type in ("voice", "audio"):
+            await message.reply_voice(pointer.file_id)
+    except Exception:
+        # The answer already went out; failing to re-attach the original is
+        # not worth an error message.
+        logger.warning("could not re-send source media", exc_info=True)
 
 
 async def _handle_reminder(
