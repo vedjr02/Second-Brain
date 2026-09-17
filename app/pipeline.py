@@ -41,7 +41,10 @@ logger = logging.getLogger(__name__)
 _OTHER_REPLY = (
     "Got it — I only store notes, links, reminders, and answer questions for now."
 )
-_SORRY_REPLY = "Sorry, I couldn't process that just now. Please try again."
+_SORRY_REPLY = (
+    "I couldn't reach my language model just now, so I haven't filed that "
+    "properly — send it again in a moment."
+)
 _REMINDER_BAD_TIME_REPLY = (
     "I saved that as a note, but I couldn't work out WHEN to remind you. "
     "Send it again with a day and time (e.g. 'remind me about the dentist "
@@ -71,21 +74,58 @@ _STORED_WITHOUT_TEXT_REPLY = (
 )
 
 
+# The last media message each chat sent, so a text that follows it can be
+# understood as its caption ("remember I want to post this tomorrow").
+_LAST_MEDIA: dict[int, tuple[int, str, datetime]] = {}
+
+
+def note_media_message(chat_id: int, message_id: int, label: str) -> None:
+    """Record that this chat just sent a photo/voice/video."""
+    _LAST_MEDIA[chat_id] = (message_id, label, datetime.now(UTC))
+
+
+def recent_media(chat_id: int, settings: Settings) -> tuple[int, str] | None:
+    """The media this chat sent moments ago, if it is still fresh."""
+    entry = _LAST_MEDIA.get(chat_id)
+    if entry is None:
+        return None
+    message_id, label, when = entry
+    age = (datetime.now(UTC) - when).total_seconds()
+    if age > settings.media_link_window_seconds:
+        del _LAST_MEDIA[chat_id]
+        return None
+    return message_id, label
+
+
+def clear_recent_media(chat_id: int) -> None:
+    _LAST_MEDIA.pop(chat_id, None)
+
+
 def utc_now_iso() -> str:
     """Current UTC time as ISO 8601, passed to the LLM calls as their clock."""
     return datetime.now(UTC).isoformat()
 
 
 async def handle_text_message(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text_override: str | None = None,
 ) -> None:
-    """Classify the text and apply the routing rules, replying in Telegram."""
+    """Classify the text and apply the routing rules, replying in Telegram.
+
+    `text_override` carries the combined text of a burst of messages (see
+    grouping.py); the update itself is still the last message of that burst,
+    which is what gets replied to.
+    """
     message = update.effective_message
-    if message is None or message.text is None or not message.text.strip():
+    if message is None:
+        return
+    raw = text_override if text_override is not None else message.text
+    if raw is None or not raw.strip():
         return
     settings: Settings = context.application.bot_data["settings"]
     chat_id = message.chat_id
-    text = message.text.strip()
+    text = raw.strip()
 
     llm = get_llm(settings)
     try:
@@ -115,8 +155,13 @@ async def handle_text_message(
                 message, context, message_id, text, classification
             )
         else:
-            await _store_note_async(message_id, text, classification)
-            await message.reply_text("Saved.")
+            linked = await _store_note_async(
+                message_id, text, classification, settings, chat_id
+            )
+            await message.reply_text(
+                f"Saved — added to the {linked} you just sent." if linked
+                else "Saved."
+            )
     elif classification.message_type == "reminder":
         await _handle_reminder(
             message, settings, message_id, text, classification
@@ -170,7 +215,9 @@ async def _handle_reminder(
             "reminder without usable due time (message %s) - stored as note only",
             message_id,
         )
-        await _store_note_async(message_id, text, classification)
+        await _store_note_async(
+            message_id, text, classification, settings, message.chat_id
+        )
         await message.reply_text(_REMINDER_BAD_TIME_REPLY)
         return
     except Exception:
@@ -179,7 +226,9 @@ async def _handle_reminder(
         return
 
     due_at = _coerce_utc(datetime.fromisoformat(spec.due_at_iso), settings)
-    await _store_note_async(message_id, text, classification)
+    await _store_note_async(
+        message_id, text, classification, settings, message.chat_id
+    )
     memory.save_reminder(message_id, spec.what, due_at)
     await message.reply_text(
         _reminder_confirmation(spec.what, due_at, settings.user_display_timezone)
@@ -236,6 +285,7 @@ async def handle_photo_message(
         file_id=file_id,
         raw_content_text=None,  # enriched after OCR below
     )
+    note_media_message(chat_id, message_id, "photo")
 
     try:
         photo_bytes = await _fetch_photo_bytes(context.bot, file_id)
@@ -367,6 +417,7 @@ async def _ingest_transcribed_media(
         file_id=file_id,
         raw_content_text=None,
     )
+    note_media_message(message.chat_id, message_id, media_label)
 
     try:
         path = await _download_telegram_file(context.bot, file_id)
@@ -474,6 +525,7 @@ async def handle_document_image_message(
         file_id=document.file_id,
         raw_content_text=None,
     )
+    note_media_message(message.chat_id, message_id, "photo")
     try:
         photo_bytes = await _fetch_photo_bytes(context.bot, document.file_id)
     except Exception:
@@ -540,6 +592,7 @@ async def handle_telegram_video_message(
         file_id=video.file_id,
         raw_content_text=None,
     )
+    note_media_message(message.chat_id, message_id, "video")
     await message.reply_text("⏳ Working on that video — this can take a minute.")
     try:
         path = await _download_telegram_file(context.bot, video.file_id)
@@ -593,10 +646,29 @@ def _store_extracted_text(message_id: int, combined: str) -> None:
 
 
 async def _store_note_async(
-    message_id: int, text: str, classification: Classification
-) -> None:
-    """_store_note off the event loop (embedding is CPU-bound)."""
-    await asyncio.to_thread(_store_note, message_id, text, classification)
+    message_id: int,
+    text: str,
+    classification: Classification,
+    settings: Settings | None = None,
+    chat_id: int | None = None,
+) -> str | None:
+    """Store a note off the event loop (embedding is CPU-bound).
+
+    When the chat sent a photo/voice/video moments ago, the note is filed
+    against THAT message instead of this one: the text is almost always about
+    the media ("remember I want to post this tomorrow"), and filing it there
+    keeps the file_id pointer and the words in one memory. Returns the media
+    label when that happened, so the reply can say so.
+    """
+    linked: str | None = None
+    target = message_id
+    if settings is not None and chat_id is not None:
+        media = recent_media(chat_id, settings)
+        if media is not None:
+            target, linked = media
+            clear_recent_media(chat_id)
+    await asyncio.to_thread(_store_note, target, text, classification)
+    return linked
 
 
 def _store_note(

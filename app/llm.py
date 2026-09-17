@@ -27,7 +27,11 @@ logger = logging.getLogger(__name__)
 
 # Transient server-side failures worth retrying (demand spikes, rate limits).
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-_MAX_ATTEMPTS = 4
+# Kept low on purpose: a person waiting in a chat would rather be told the
+# call failed than watch nothing happen. Four 60s attempts with backoff meant
+# ~4 minutes of silence for one flaky request.
+_MAX_ATTEMPTS = 3
+_REQUEST_TIMEOUT = 25.0
 
 # Auto-pick preference (cheapest capable first) when LLM_MODEL is unset.
 # Legacy moonshot-v1-* models are a last resort, never preferred over Kimi.
@@ -187,7 +191,7 @@ class LLMClient:
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             },
-            timeout=60.0,
+            timeout=_REQUEST_TIMEOUT,
         )
         logger.info("LLM ready: base_url=%s model=%s", self._base_url, self._model)
 
@@ -260,7 +264,7 @@ class LLMClient:
         return self._post_with_retries(payload)
 
     def _post_with_retries(self, payload: dict[str, Any]) -> str:
-        delay = 2.0
+        delay = 1.5
         last_error: Exception | None = None
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
@@ -274,7 +278,7 @@ class LLMClient:
                 if status not in _RETRYABLE_STATUS:
                     raise
                 last_error = exc
-            except httpx.TransportError as exc:
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
                 last_error = exc
             if attempt < _MAX_ATTEMPTS:
                 logger.warning(
@@ -285,7 +289,7 @@ class LLMClient:
                     str(last_error)[:120],
                 )
                 time.sleep(delay)
-                delay *= 2.5
+                delay *= 2.0
         assert last_error is not None
         raise last_error
 

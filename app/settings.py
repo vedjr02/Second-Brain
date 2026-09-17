@@ -51,6 +51,12 @@ class Settings:
     owner_chat_id: int = 0
     # How often the database is snapshotted to Telegram.
     backup_interval_hours: int = 6
+    # Rapid-fire messages are buffered this long and processed as one thought;
+    # each new message restarts the timer. 0 disables grouping.
+    group_window_seconds: float = 8.0
+    # A text message arriving within this long after a photo/voice/video is
+    # treated as that media's caption, not as an unrelated note.
+    media_link_window_seconds: float = 300.0
     # Shared secret the GitHub Actions cron must present as a Bearer token when
     # calling POST /check-reminders. Empty disables the endpoint (404).
     reminder_check_secret: str = ""
@@ -92,6 +98,10 @@ def load_settings() -> Settings:
             os.getenv("USER_DISPLAY_TIMEZONE", "UTC")
         ),
         owner_chat_id=int(os.getenv("OWNER_CHAT_ID", "0") or 0),
+        group_window_seconds=float(os.getenv("GROUP_WINDOW_SECONDS", "8")),
+        media_link_window_seconds=float(
+            os.getenv("MEDIA_LINK_WINDOW_SECONDS", "300")
+        ),
         backup_interval_hours=int(os.getenv("BACKUP_INTERVAL_HOURS", "6")),
         reminder_check_secret=os.getenv("REMINDER_CHECK_SECRET", ""),
     )

@@ -23,7 +23,7 @@ from telegram.ext import (
     filters,
 )
 
-from . import backup, memory, pipeline
+from . import backup, grouping, memory, pipeline
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -221,7 +221,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await message.reply_text(_NOT_OWNER_REPLY)
         return
     if message.text:
-        await pipeline.handle_text_message(update, context)
+        # Buffered, not handled now: the next message may be the other half
+        # of the same thought (see grouping.py).
+        await grouping.submit_text(update, context)
     elif message.photo:
         await pipeline.handle_photo_message(update, context)
     elif message.document and _is_image_document(message.document):

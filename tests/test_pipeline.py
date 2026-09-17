@@ -1,5 +1,6 @@
-"""Tests for the Phase 1-3 pipeline routing rules (all collaborators faked)."""
+"""Tests for the Phase 1-5 pipeline routing rules (all collaborators faked)."""
 
+import asyncio
 import io
 from datetime import datetime, timezone
 from typing import Any
@@ -132,6 +133,14 @@ class FakeMemory:
 
     def update_message_content(self, message_id: int, raw_content_text: str) -> None:
         self.updated_content.append((message_id, raw_content_text))
+
+
+@pytest.fixture(autouse=True)
+def _no_leftover_media() -> Any:
+    """'The text after a photo belongs to that photo' is per-chat state."""
+    pipeline._LAST_MEDIA.clear()
+    yield
+    pipeline._LAST_MEDIA.clear()
 
 
 @pytest.fixture
@@ -280,7 +289,7 @@ async def test_reminder_parse_crash_replies_sorry_and_stores_nothing(
 
     assert memory.chunks == []
     assert memory.reminders == []
-    assert "couldn't process" in _reply_text(update, _bot)
+    assert "couldn't reach my language model" in _reply_text(update, _bot)
 
 
 async def test_other_is_not_stored(fakes: tuple[FakeGemini, FakeMemory]) -> None:
@@ -315,7 +324,7 @@ async def test_classification_failure_replies_sorry_and_stores_nothing(
 
     assert memory.saved == []
     assert memory.chunks == []
-    assert "couldn't process" in _reply_text(update, _bot)
+    assert "couldn't reach my language model" in _reply_text(update, _bot)
 
 
 async def test_blank_text_is_ignored(fakes: tuple[FakeGemini, FakeMemory]) -> None:
@@ -632,3 +641,105 @@ async def test_plain_note_without_a_link_never_touches_the_video_pipeline(
     await pipeline.handle_text_message(update, context)
 
     assert _reply_text(update, _bot) == "Saved."
+
+
+# --- grouping: several messages, one thought --------------------------------
+
+
+async def test_a_burst_of_messages_is_processed_as_one(
+    fakes: tuple[FakeGemini, FakeMemory],
+) -> None:
+    """People send one sentence across three messages. Handle it as one."""
+    from app import grouping
+
+    gemini, memory = fakes
+    context = MagicMock()
+    context.application.bot_data = {
+        "settings": _settings(group_window_seconds=0.05)
+    }
+    for part in ("remember", "the spare key", "is under the mat"):
+        update, _bot = _text_update(part)
+        await grouping.submit_text(update, context)
+
+    await asyncio.sleep(0.2)
+
+    # One classification, one saved memory — not three.
+    assert len(gemini.classify_calls) == 1
+    assert gemini.classify_calls[0][0] == "remember. the spare key. is under the mat"
+    assert len(memory.chunks) == 1
+
+
+async def test_a_new_message_restarts_the_window(
+    fakes: tuple[FakeGemini, FakeMemory],
+) -> None:
+    from app import grouping
+
+    gemini, _memory = fakes
+    context = MagicMock()
+    context.application.bot_data = {
+        "settings": _settings(group_window_seconds=0.15)
+    }
+    update, _bot = _text_update("first")
+    await grouping.submit_text(update, context)
+    await asyncio.sleep(0.1)  # still inside the window
+    assert gemini.classify_calls == []
+
+    update2, _bot2 = _text_update("second")
+    await grouping.submit_text(update2, context)
+    await asyncio.sleep(0.1)  # the timer restarted, so still nothing
+    assert gemini.classify_calls == []
+
+    await asyncio.sleep(0.15)
+    assert len(gemini.classify_calls) == 1
+    assert gemini.classify_calls[0][0] == "first. second"
+
+
+def test_combine_punctuates_fragments_but_leaves_sentences_alone() -> None:
+    from app.grouping import combine
+
+    assert combine(["remember", "buy milk"]) == "remember. buy milk"
+    assert combine(["Is it Tuesday?", "or Wednesday"]) == "Is it Tuesday? or Wednesday"
+    assert combine([" ", "only this"]) == "only this"
+
+
+async def test_text_after_a_photo_is_filed_against_the_photo(
+    fakes: tuple[FakeGemini, FakeMemory],
+) -> None:
+    """The real case: photo, then 'remember I want to post this tomorrow'."""
+    _gemini, memory = fakes
+    settings = _settings()
+    pipeline.note_media_message(42, 101, "photo")
+
+    update, _bot = _text_update("remember I want to post this tomorrow")
+    context = MagicMock()
+    context.application.bot_data = {"settings": settings}
+    await pipeline.handle_text_message(update, context)
+
+    # The note hangs off the photo's message row (101), which still holds the
+    # file_id pointer — not off the text message that would lose it.
+    assert memory.chunks[0]["id"] == 101
+    assert "added to the photo you just sent" in _reply_text(update, _bot)
+
+
+async def test_an_old_photo_does_not_capture_a_later_unrelated_note(
+    fakes: tuple[FakeGemini, FakeMemory],
+) -> None:
+    from datetime import timedelta
+
+    _gemini, memory = fakes
+    settings = _settings(media_link_window_seconds=60)
+    pipeline._LAST_MEDIA[42] = (
+        101,
+        "photo",
+        datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+
+    update, _bot = _text_update("the bins go out on Thursday")
+    context = MagicMock()
+    context.application.bot_data = {"settings": settings}
+    await pipeline.handle_text_message(update, context)
+
+    # Stale media is dropped, so the note is filed on its own and the reply
+    # makes no claim about a photo.
+    assert _reply_text(update, _bot) == "Saved."
+    assert pipeline.recent_media(42, settings) is None

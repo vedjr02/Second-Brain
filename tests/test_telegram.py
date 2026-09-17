@@ -12,18 +12,24 @@ from app.settings import Settings
 from app.telegram import build_application, handle_message, handle_start
 
 
-def _settings() -> Settings:
-    return Settings(
+def _settings(**overrides: Any) -> Settings:
+    values: dict[str, Any] = dict(
         telegram_bot_token="stub-token",
         telegram_webhook_secret="s",
         webhook_base_url="",
         llm_api_key="stub-key",
     )
+    values.update(overrides)
+    return Settings(**values)
 
 
 def _context(settings: Settings | None = None) -> MagicMock:
     context = MagicMock()
-    context.application.bot_data = {"settings": settings or _settings()}
+    # group_window_seconds=0 processes each message immediately, which is what
+    # these routing tests are about; grouping has its own tests.
+    context.application.bot_data = {
+        "settings": settings or _settings(group_window_seconds=0)
+    }
     return context
 
 
@@ -196,12 +202,7 @@ async def test_messages_from_other_chats_are_refused_when_owner_is_set(
     monkeypatch.setattr(pipeline_module, "handle_text_message", fake_handle_text)
     bot = AsyncMock()
     update = _text_update("hello", bot)
-    settings = Settings(
-        telegram_bot_token="t",
-        telegram_webhook_secret="s",
-        llm_api_key="k",
-        owner_chat_id=999,  # the update above comes from chat 42
-    )
+    settings = _settings(owner_chat_id=999, group_window_seconds=0)
 
     await handle_message(update, _context(settings))
 
@@ -219,12 +220,7 @@ async def test_owner_messages_still_route_normally(
 
     monkeypatch.setattr(pipeline_module, "handle_text_message", fake_handle_text)
     update = _text_update("hello")
-    settings = Settings(
-        telegram_bot_token="t",
-        telegram_webhook_secret="s",
-        llm_api_key="k",
-        owner_chat_id=42,
-    )
+    settings = _settings(owner_chat_id=42, group_window_seconds=0)
 
     await handle_message(update, _context(settings))
 

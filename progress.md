@@ -118,17 +118,50 @@ sister's flight" when only Mum's flight is saved still correctly answers
 Tests: 86 → 105 (new `tests/test_backup.py`, owner-gate and command tests,
 hybrid-retrieval tests against a real temp database).
 
+## Third session (17 September 2026) — why it went silent, and bursts
+
+**"The bot ignored my messages" was not the bot ignoring anything.** Two
+separate causes, one after the other:
+
+1. Nothing was running. No process, no webhook (`WEBHOOK_BASE_URL` is empty —
+   nothing is deployed yet), so the messages sat in Telegram's update queue.
+   Started it with `python -m app.local` and set `OWNER_CHAT_ID=8787286992`,
+   read out of the queued updates. The first real backup ran on boot and
+   pinned itself — the untested path from last session, now proven live.
+2. Then a Kimi call hit `The read operation timed out` and retried 4 times at
+   a 60-second timeout with 2.5x backoff: roughly four minutes of silence
+   before any reply. Measured `kimi-k2.6` directly at 2.9s, so this was a
+   transient API blip, not a slow model. Timeout is now 25s, 3 attempts, 2x
+   backoff, and the failure reply says what actually went wrong instead of a
+   generic apology.
+
+**Message grouping (`app/grouping.py`)** — the habit of sending one sentence
+across several messages is now first-class. Text is debounced per chat for 8
+seconds; each new message restarts the timer; the burst is joined into one
+message, classified once, and answered under the last message of the burst.
+Fragments get a full stop when joined so the classifier reads them as separate
+clauses.
+
+**Media context**: a text arriving within 5 minutes of a photo/voice/video is
+filed against THAT message instead of its own. This is the exact case that
+failed — an unreadable photo followed by "remember I want to post this
+tomorrow" used to leave the photo unsearchable and the note pointing nowhere;
+now both live in one memory that keeps the `file_id` pointer, and the bot says
+"added to the photo you just sent". The link expires, so an old photo never
+captures a later unrelated note.
+
+Tests: 105 → 110.
+
 ## Known gaps / next steps
 
-- **Set `OWNER_CHAT_ID` before relying on this.** Until it is set the bot is
-  open to anyone who finds it AND has no backups — the two things that make it
-  actually yours. Send `/chatid`, put the number in the env, restart.
+- **Not deployed.** It runs locally via `python -m app.local`, so it only
+  works while the machine is awake. Render + webhook is the next real step.
 - `LLM_VISION_MODEL` is unset, so photos without readable text are stored but
   not searchable. Set it to a Kimi VL model to enable one-line descriptions.
 - Long notes are stored as a single chunk — fine for short personal notes,
   worth splitting if long articles get forwarded often.
 - Editing a memory in place is still not possible (delete and re-send).
-- The backup has never been exercised against a live Telegram chat — the logic
-  is covered by tests, but the first real `/backup` is worth watching.
+- Asking to see a saved photo again does not re-fetch it from Telegram yet;
+  the `file_id` is kept, so the plumbing for it exists.
 - yt-dlp needs periodic upgrades; platforms break scrapers regularly. The
   bookmark fallback means a stale yt-dlp degrades quietly rather than breaking.

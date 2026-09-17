@@ -24,11 +24,12 @@ app/
   reels.py       Phase 5: yt-dlp download, ffmpeg keyframes, OCR + LLM summary
   reminders.py   Phase 2 worker: claims due reminders and pushes them to Telegram
   backup.py      Snapshots the database to Telegram and restores it after a wipe
+  grouping.py    Debounces rapid-fire messages into one thought before routing
   db.py          SQLite access (WAL), schema (messages/memory_chunks/reminders), probe
   settings.py    Env-based settings, fails loudly if anything required is missing
 scripts/
   check_db.py    Standalone DB check: schema + insert/read/delete probe
-tests/           105 offline tests (endpoints, secret auth, routing, reminders, photos, LLM parsing)
+tests/           110 offline tests (endpoints, secret auth, routing, reminders, photos, LLM parsing)
 .github/workflows/check-reminders.yml  cron: POST /check-reminders every minute
 ```
 
@@ -54,7 +55,7 @@ tests/           105 offline tests (endpoints, secret auth, routing, reminders, 
    cp .env.example .env          # fill in TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, LLM_API_KEY
    python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
    .venv/bin/python -m scripts.check_db        # must print probe JSON, no error
-   .venv/bin/python -m pytest -q               # 105 passed
+   .venv/bin/python -m pytest -q               # 110 passed
    .venv/bin/python -m mypy                    # no issues
    ```
    `check_db` proves: the SQLite file is live, schema created, row insert → read → delete works.
@@ -176,6 +177,22 @@ and without it anyone who finds yours can write to your memory.
 | `/status` | How many memories, reminders pending, last backup |
 | `/backup` | Snapshot the database to this chat right now |
 | `/chatid` | This chat's id, for `OWNER_CHAT_ID` |
+
+## Talking in bursts
+
+People do not write one message per idea. A photo, then "remember this", then
+"I want to post it tomorrow" is one thought split across three updates, and
+handling each alone gets all three wrong.
+
+- Text is **debounced per chat** (`GROUP_WINDOW_SECONDS`, default 8). Each new
+  message restarts the timer; when you stop typing, everything you sent is
+  joined into one message and classified once. The reply lands under your last
+  message.
+- A text sent within `MEDIA_LINK_WINDOW_SECONDS` (default 300) of a photo,
+  voice note or video is filed **against that media**, not as a stray note —
+  so the words and the `file_id` pointer stay in one memory, and the bot says
+  "added to the photo you just sent".
+- An older photo never captures a later unrelated note; the link expires.
 
 ## Retrieval: meaning *and* exact wording
 
