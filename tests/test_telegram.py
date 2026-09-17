@@ -499,11 +499,12 @@ async def test_timezone_without_arguments_reports_the_current_one(
 
 async def test_timezone_sets_a_valid_zone(monkeypatch: pytest.MonkeyPatch) -> None:
     applied: list[str] = []
-    monkeypatch.setattr(
-        telegram_module,
-        "set_stored_timezone",
-        lambda name: applied.append(name) or name,
-    )
+
+    def fake_set(name: str) -> str:
+        applied.append(name)
+        return name
+
+    monkeypatch.setattr(telegram_module, "set_stored_timezone", fake_set)
     bot = AsyncMock()
     update = _text_update("/timezone Asia/Kolkata", bot)
     context = _context()
