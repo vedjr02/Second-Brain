@@ -37,3 +37,42 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
     return [vec.tolist() for vec in _get_model().embed(texts)]
+
+
+# A MiniLM embedding blurs badly past a few hundred words: one vector cannot
+# represent a whole article, so its middle becomes unretrievable. Long text is
+# split on sentence boundaries into overlapping windows instead.
+_CHUNK_CHARS = 700
+_CHUNK_OVERLAP_CHARS = 120
+
+
+def split_for_embedding(text: str) -> list[str]:
+    """Split long text into overlapping chunks; short text passes through.
+
+    Splits at sentence ends where possible so a chunk is never cut mid-fact,
+    and overlaps consecutive chunks so a fact spanning a boundary still lives
+    somewhere complete.
+    """
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= _CHUNK_CHARS:
+        return [cleaned] if cleaned else []
+
+    chunks: list[str] = []
+    start = 0
+    while start < len(cleaned):
+        end = min(start + _CHUNK_CHARS, len(cleaned))
+        if end < len(cleaned):
+            boundary = max(
+                cleaned.rfind(". ", start, end),
+                cleaned.rfind("! ", start, end),
+                cleaned.rfind("? ", start, end),
+            )
+            if boundary > start + _CHUNK_CHARS // 2:
+                end = boundary + 1
+        chunk = cleaned[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(cleaned):
+            break
+        start = max(end - _CHUNK_OVERLAP_CHARS, start + 1)
+    return chunks

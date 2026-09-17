@@ -160,3 +160,29 @@ def test_unrelated_memories_are_not_dragged_in_by_keywords(
         [0.0] * 384, chat_id=1, top_k=5, threshold=0.9,
         query_text="what was the electrician's number?",
     ) == []
+
+
+# --- long text is split so its middle stays retrievable ---------------------
+
+
+def test_short_text_is_not_split() -> None:
+    from app.embeddings import split_for_embedding
+
+    assert split_for_embedding("the spare key is under the mat") == [
+        "the spare key is under the mat"
+    ]
+    assert split_for_embedding("   ") == []
+
+
+def test_long_text_splits_into_overlapping_chunks() -> None:
+    from app.embeddings import split_for_embedding
+
+    text = " ".join(f"Fact number {i} about the thing." for i in range(120))
+    chunks = split_for_embedding(text)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 760 for chunk in chunks)
+    # Nothing is lost: a fact from the middle still appears somewhere.
+    assert any("Fact number 60" in chunk for chunk in chunks)
+    # Consecutive chunks overlap, so a fact on a boundary survives whole.
+    assert chunks[0].split()[-3] in chunks[1]
