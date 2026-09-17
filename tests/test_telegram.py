@@ -457,3 +457,25 @@ async def test_export_with_an_empty_brain_says_so(
     await telegram_module.handle_export(update, _context())
 
     assert "nothing to export" in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_command_menu_covers_every_registered_command() -> None:
+    """A command nobody can discover may as well not exist."""
+    application = build_application(_settings())
+    registered = {
+        command
+        for handler in application.handlers[0]
+        for command in getattr(handler, "commands", set())
+    }
+    published = {name for name, _description in telegram_module.COMMAND_MENU}
+    # /start is offered by Telegram itself, so it need not be listed.
+    assert registered - published == {"start"}
+
+
+async def test_a_failed_command_menu_never_breaks_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = MagicMock()
+    application.bot.set_my_commands = AsyncMock(side_effect=RuntimeError("offline"))
+
+    await telegram_module.publish_command_menu(application)  # must not raise

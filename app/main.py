@@ -19,7 +19,7 @@ from telegram import Bot, Update
 from . import backup, grouping, reminders
 from .db import setup_schema
 from .settings import Settings, load_settings
-from .telegram import build_application
+from .telegram import build_application, publish_command_menu
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.ptb = application
 
+    await publish_command_menu(application)
     setup_schema()
     # A free host's disk does not survive a redeploy, so an empty database
     # here may mean "wiped", not "new" — pull the pinned Telegram snapshot

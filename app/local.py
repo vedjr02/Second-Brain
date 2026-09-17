@@ -16,7 +16,7 @@ import logging
 from . import backup, grouping, reminders
 from .db import setup_schema
 from .settings import load_settings
-from .telegram import build_application
+from .telegram import build_application, publish_command_menu
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +33,7 @@ async def run() -> None:
     await application.initialize()
     await application.start()
     await updater.start_polling(drop_pending_updates=True)
+    await publish_command_menu(application)
     setup_schema()
     await backup.restore_if_empty(settings, application.bot)
     setup_schema()

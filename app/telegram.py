@@ -372,6 +372,30 @@ def register_handlers(application: Application) -> None:
     application.add_handler(MessageHandler(~filters.TEXT, handle_message))
 
 
+# Shown in Telegram's own command menu (the "/" button), so the commands are
+# discoverable without reading a README.
+COMMAND_MENU: list[tuple[str, str]] = [
+    ("recent", "The last things I saved"),
+    ("find", "Search your memories"),
+    ("forget", "Delete a memory by number"),
+    ("reminders", "What is still going to fire"),
+    ("cancel", "Call off a reminder"),
+    ("export", "Every memory as a text file"),
+    ("status", "What I am holding, and last backup"),
+    ("backup", "Snapshot the database to this chat"),
+    ("chatid", "This chat's id"),
+    ("help", "What I understand"),
+]
+
+
+async def publish_command_menu(application: Application) -> None:
+    """Register the command menu with Telegram (best effort, never fatal)."""
+    try:
+        await application.bot.set_my_commands(COMMAND_MENU)
+    except Exception:
+        logger.warning("could not publish the command menu", exc_info=True)
+
+
 def build_application(settings: Settings, polling: bool = False) -> Application:
     """Build the PTB application; webhook mode has no polling updater."""
     builder = ApplicationBuilder().token(settings.telegram_bot_token)
