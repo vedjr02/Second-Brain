@@ -13,7 +13,7 @@ For production (Render + GitHub Actions cron) the webhook entrypoint
 import asyncio
 import logging
 
-from . import backup, reminders
+from . import backup, grouping, reminders
 from .db import setup_schema
 from .settings import load_settings
 from .telegram import build_application
@@ -59,6 +59,9 @@ async def run() -> None:
         await stop.wait()  # run until Ctrl+C
     finally:
         reminder_task.cancel()
+        # Anything still inside the grouping window is real user input that
+        # has not been saved yet — process it before the process dies.
+        await grouping.flush_all()
         await updater.stop()
         await application.stop()
         await application.shutdown()

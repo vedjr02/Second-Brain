@@ -16,7 +16,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI, HTTPException, Request
 from telegram import Bot, Update
 
-from . import backup, reminders
+from . import backup, grouping, reminders
 from .db import setup_schema
 from .settings import Settings, load_settings
 from .telegram import build_application
@@ -59,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "for local testing (see README)"
         )
     yield
+    await grouping.flush_all()
     await application.stop()
     await application.shutdown()
 
