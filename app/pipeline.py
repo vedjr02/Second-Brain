@@ -31,7 +31,7 @@ from telegram import Bot, Message, Update
 from telegram.ext import ContextTypes
 
 from . import memory, reels, voice
-from .embeddings import embed_texts
+from .embeddings import embed_texts, split_for_embedding
 from .llm import Classification, LLMVisionUnavailableError, ReminderParseError
 from .llm import get_llm
 from .settings import Settings
@@ -634,15 +634,20 @@ async def _store_media_summary(
 
 
 def _store_extracted_text(message_id: int, combined: str) -> None:
-    """Persist extracted media text on the message row and as a memory chunk."""
+    """Persist extracted media text on the message row and as memory chunks.
+
+    A reel transcript or a page of OCR'd text is often long enough to need
+    splitting, same as a long note.
+    """
     memory.update_message_content(message_id, combined)
-    (vec,) = embed_texts([combined])
-    memory.insert_memory_chunk(
-        source_message_id=message_id,
-        chunk_text=combined,
-        embedding=vec,
-        tags=[],
-    )
+    pieces = split_for_embedding(combined) or [combined]
+    for piece, vec in zip(pieces, embed_texts(pieces)):
+        memory.insert_memory_chunk(
+            source_message_id=message_id,
+            chunk_text=piece,
+            embedding=vec,
+            tags=[],
+        )
 
 
 async def _store_note_async(
@@ -682,15 +687,17 @@ def _store_note(
     can say roughly when something was saved; the embedding is computed from
     the clean text so the date suffix never skews retrieval.
     """
-    (vec,) = embed_texts([text])
+    pieces = split_for_embedding(text) or [text]
+    vectors = embed_texts(pieces)
     saved_day = memory.get_message_saved_day(message_id)
-    chunk_text = f"{text} (saved {saved_day})" if saved_day else text
-    memory.insert_memory_chunk(
-        source_message_id=message_id,
-        chunk_text=chunk_text,
-        embedding=vec,
-        tags=classification.topics,
-    )
+    for piece, vec in zip(pieces, vectors):
+        chunk_text = f"{piece} (saved {saved_day})" if saved_day else piece
+        memory.insert_memory_chunk(
+            source_message_id=message_id,
+            chunk_text=chunk_text,
+            embedding=vec,
+            tags=classification.topics,
+        )
 
 
 def format_reminder_message(

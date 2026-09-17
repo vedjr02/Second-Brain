@@ -743,3 +743,22 @@ async def test_an_old_photo_does_not_capture_a_later_unrelated_note(
     # makes no claim about a photo.
     assert _reply_text(update, _bot) == "Saved."
     assert pipeline.recent_media(42, settings) is None
+
+
+async def test_a_long_note_is_stored_as_several_retrievable_chunks(
+    fakes: tuple[FakeGemini, FakeMemory], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _gemini, memory = fakes
+    monkeypatch.setattr(
+        pipeline, "embed_texts", lambda texts: [[0.1] * 384 for _ in texts]
+    )
+    long_note = " ".join(f"Point {i} of the article." for i in range(200))
+    update, _bot = _text_update(long_note)
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    assert len(memory.chunks) > 1
+    assert any("Point 100" in chunk["text"] for chunk in memory.chunks)
+    assert _reply_text(update, _bot) == "Saved."
