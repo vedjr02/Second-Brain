@@ -438,3 +438,102 @@ def count_pending_reminders(chat_id: int) -> int:
             (chat_id,),
         ).fetchone()
     return 0 if row is None else int(row["n"])
+
+
+@dataclass(frozen=True)
+class MediaPointer:
+    """Where a memory's original file lives in Telegram."""
+
+    file_id: str
+    raw_type: str
+
+
+def media_for_chunk_text(chat_id: int, chunk_text: str) -> MediaPointer | None:
+    """The file behind a retrieved memory, if it came from media.
+
+    Telegram is the blob store: the row keeps only the pointer, so showing the
+    user the original photo means handing this file_id straight back.
+    """
+    with db.query() as conn:
+        row = conn.execute(
+            """
+            SELECT m.file_id, m.raw_type
+              FROM memory_chunks mc
+              JOIN messages m ON m.id = mc.source_message_id
+             WHERE m.chat_id = ?
+               AND mc.chunk_text = ?
+               AND m.file_id IS NOT NULL
+             ORDER BY mc.id DESC
+             LIMIT 1
+            """,
+            (chat_id, chunk_text),
+        ).fetchone()
+    if row is None:
+        return None
+    return MediaPointer(file_id=str(row["file_id"]), raw_type=str(row["raw_type"]))
+
+
+def all_chunks(chat_id: int) -> list[SavedChunk]:
+    """Every memory for this chat, oldest first (used by /export)."""
+    with db.query() as conn:
+        rows = conn.execute(
+            """
+            SELECT mc.id, mc.chunk_text, mc.created_at
+              FROM memory_chunks mc
+              JOIN messages m ON m.id = mc.source_message_id
+             WHERE m.chat_id = ?
+             ORDER BY mc.id
+            """,
+            (chat_id,),
+        ).fetchall()
+    return [
+        SavedChunk(
+            id=int(row["id"]),
+            chunk_text=str(row["chunk_text"]),
+            created_at=_parse_iso(str(row["created_at"])),
+        )
+        for row in rows
+    ]
+
+
+def pending_reminders(chat_id: int) -> list[DueReminder]:
+    """Unfired reminders for this chat, soonest first."""
+    with db.query() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.id, m.chat_id, r.reminder_text, r.due_at, r.created_at
+              FROM reminders r
+              JOIN messages m ON m.id = r.source_message_id
+             WHERE m.chat_id = ? AND r.fired = 0
+             ORDER BY r.due_at
+            """,
+            (chat_id,),
+        ).fetchall()
+    return [
+        DueReminder(
+            id=int(row["id"]),
+            chat_id=int(row["chat_id"]),
+            reminder_text=str(row["reminder_text"]),
+            due_at=_parse_iso(str(row["due_at"])),
+            created_at=_parse_iso(str(row["created_at"])),
+        )
+        for row in rows
+    ]
+
+
+def cancel_reminder(chat_id: int, reminder_id: int) -> str | None:
+    """Delete an unfired reminder owned by this chat; returns its text."""
+    with db.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT r.id, r.reminder_text
+              FROM reminders r
+              JOIN messages m ON m.id = r.source_message_id
+             WHERE r.id = ? AND m.chat_id = ? AND r.fired = 0
+            """,
+            (reminder_id, chat_id),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+    return str(row["reminder_text"])
