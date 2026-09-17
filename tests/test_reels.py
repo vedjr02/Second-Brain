@@ -114,3 +114,39 @@ def test_build_media_summary_falls_back_to_raw_pieces_when_the_llm_fails(
     )
 
     assert result == "my caption on screen spoken words"
+
+
+@pytest.mark.parametrize(
+    "stderr,expected",
+    [
+        ("ERROR: [Instagram] Requested content is not available, login required", True),
+        ("ERROR: Sign in to confirm you're not a bot", True),
+        ("ERROR: Unsupported URL", False),
+        ("", False),
+    ],
+)
+def test_needs_login_recognises_a_blocked_platform(stderr: str, expected: bool) -> None:
+    assert reels.needs_login(stderr) is expected
+
+
+def test_cookies_are_passed_to_yt_dlp_when_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: Any) -> Any:
+        seen.append(command)
+        (tmp_path / "source.mp4").write_bytes(b"v")
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(reels.subprocess, "run", fake_run)
+    monkeypatch.setattr(reels, "_process", lambda _s, _p, _c: "ok")
+    settings = Settings(
+        telegram_bot_token="t", telegram_webhook_secret="s", llm_api_key="k",
+        ytdlp_cookies_from_browser="chrome",
+    )
+
+    reels.process_video_link(settings, "https://x/1", "", str(tmp_path))
+
+    assert "--cookies-from-browser" in seen[0]
+    assert "chrome" in seen[0]

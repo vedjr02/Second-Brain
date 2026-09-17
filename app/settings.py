@@ -57,6 +57,10 @@ class Settings:
     # A text message arriving within this long after a photo/voice/video is
     # treated as that media's caption, not as an unrelated note.
     media_link_window_seconds: float = 300.0
+    # Browser to lift cookies from for yt-dlp (e.g. "chrome", "firefox").
+    # Instagram and TikTok serve most posts only to a signed-in session, so
+    # without this many reels can only be saved as bookmarks.
+    ytdlp_cookies_from_browser: str = ""
     # Shared secret the GitHub Actions cron must present as a Bearer token when
     # calling POST /check-reminders. Empty disables the endpoint (404).
     reminder_check_secret: str = ""
@@ -98,6 +102,7 @@ def load_settings() -> Settings:
             os.getenv("USER_DISPLAY_TIMEZONE", "UTC")
         ),
         owner_chat_id=int(os.getenv("OWNER_CHAT_ID", "0") or 0),
+        ytdlp_cookies_from_browser=os.getenv("YTDLP_COOKIES_FROM_BROWSER", ""),
         group_window_seconds=float(os.getenv("GROUP_WINDOW_SECONDS", "8")),
         media_link_window_seconds=float(
             os.getenv("MEDIA_LINK_WINDOW_SECONDS", "300")

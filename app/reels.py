@@ -53,6 +53,31 @@ def strip_url(text: str) -> str:
     return " ".join(_URL_PATTERN.sub(" ", text).split())
 
 
+class DownloadError(RuntimeError):
+    """yt-dlp could not fetch the video. `login_required` explains why."""
+
+    def __init__(self, detail: str, login_required: bool = False) -> None:
+        super().__init__(f"yt-dlp failed: {detail}")
+        self.login_required = login_required
+
+
+# What yt-dlp says when a platform will only serve a signed-in session.
+_LOGIN_MARKERS = (
+    "login required",
+    "rate-limit reached",
+    "requested content is not available",
+    "sign in to confirm",
+    "cookies",
+    "private video",
+)
+
+
+def needs_login(stderr: str) -> bool:
+    """Whether a download failed because the platform wanted a session."""
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _LOGIN_MARKERS)
+
+
 def is_video_link(text: str) -> bool:
     """True when the message contains a URL (yt-dlp decides what actually works)."""
     return bool(extract_url(text))
@@ -94,12 +119,14 @@ def process_video_link(
         "--",
         url,
     ]
+    if settings.ytdlp_cookies_from_browser:
+        # Instagram and TikTok serve most posts only to a signed-in session.
+        command += ["--cookies-from-browser", settings.ytdlp_cookies_from_browser]
     result = subprocess.run(command, capture_output=True, text=True, timeout=300)
     downloaded = _downloaded_file(workdir)
     if result.returncode != 0 or downloaded is None:
-        raise RuntimeError(
-            f"yt-dlp failed: {(result.stderr or '').strip()[:200] or 'no file produced'}"
-        )
+        stderr = (result.stderr or "").strip()
+        raise DownloadError(stderr[:200] or "no file produced", needs_login(stderr))
     return _process(settings, downloaded, caption)
 
 
