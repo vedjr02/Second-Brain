@@ -180,9 +180,9 @@ def test_build_application_registers_handlers() -> None:
     settings = _settings()
     application = build_application(settings)
     group_zero = application.handlers[0]
-    # 7 commands (/start /help /chatid /recent /forget /status /backup)
+    # 8 commands (/start /help /chatid /recent /forget /find /status /backup)
     # + the text handler + the non-text handler
-    assert len(group_zero) == 9
+    assert len(group_zero) == 10
     assert application.bot_data["settings"] is settings
     assert application.updater is None  # webhook mode: no polling updater
 
@@ -298,3 +298,38 @@ async def test_status_warns_loudly_when_backups_are_off(
     text = bot.send_message.await_args.kwargs["text"]
     assert "12 memories saved" in text
     assert "Backups: OFF" in text
+
+
+async def test_find_lists_matches_without_calling_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(telegram_module, "embed_texts", lambda texts: [[0.1] * 384])
+    monkeypatch.setattr(
+        telegram_module.memory,
+        "search_memory",
+        lambda *a, **k: [("the spare key is under the mat", 0.8)],
+    )
+    bot = AsyncMock()
+    update = _text_update("/find key", bot)
+    context = _context()
+    context.args = ["key"]
+
+    await telegram_module.handle_find(update, context)
+
+    text = bot.send_message.await_args.kwargs["text"]
+    assert "spare key is under the mat" in text
+
+
+async def test_find_says_plainly_when_nothing_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(telegram_module, "embed_texts", lambda texts: [[0.1] * 384])
+    monkeypatch.setattr(telegram_module.memory, "search_memory", lambda *a, **k: [])
+    bot = AsyncMock()
+    update = _text_update("/find unicorn", bot)
+    context = _context()
+    context.args = ["unicorn"]
+
+    await telegram_module.handle_find(update, context)
+
+    assert "Nothing saved matches" in bot.send_message.await_args.kwargs["text"]

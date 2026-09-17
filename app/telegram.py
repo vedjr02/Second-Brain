@@ -24,6 +24,7 @@ from telegram.ext import (
 )
 
 from . import backup, grouping, memory, pipeline
+from .embeddings import embed_texts
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ _START_REPLY = (
     "Send me notes, links, reels, photos, voice notes or reminders and "
     "I'll remember them.\n"
     "Ask me about anything you've saved and I'll answer from your memory.\n\n"
-    "Commands: /recent, /forget, /status, /backup, /help"
+    "Commands: /recent, /find, /forget, /status, /backup, /help"
 )
 
 _HELP_REPLY = (
@@ -53,6 +54,7 @@ _HELP_REPLY = (
     "Commands:\n"
     "/recent — the last things I saved\n"
     "/forget <number> — delete one of them (numbers come from /recent)\n"
+    "/find <words> — search your memories without spending a model call\n"
     "/status — how much I'm holding, and when I last backed up\n"
     "/backup — snapshot the database to this chat right now\n"
     "/chatid — show this chat's id (for OWNER_CHAT_ID)"
@@ -153,6 +155,37 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await message.reply_text(f"Forgotten: {_shorten(deleted)}")
 
 
+async def handle_find(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Raw search: show matching memories without spending an LLM call.
+
+    Asking a question costs a model call and gives a written answer. /find is
+    the cheap version — it lists what is actually stored, which is also how
+    you check whether something was saved at all.
+    """
+    message = update.effective_message
+    if message is None:
+        return
+    query = " ".join(context.args or []).strip()
+    if not query:
+        await message.reply_text("Use /find <words> to search your memories.")
+        return
+    settings: Settings = context.application.bot_data["settings"]
+    vector = (await asyncio.to_thread(embed_texts, [query]))[0]
+    results = await asyncio.to_thread(
+        memory.search_memory,
+        vector,
+        message.chat_id,
+        10,
+        settings.similarity_threshold,
+        query,
+    )
+    if not results:
+        await message.reply_text(f"Nothing saved matches “{query}”.")
+        return
+    lines = [f"• {_shorten(text)}" for text, _score in results]
+    await message.reply_text(f"Matches for “{query}”:\n" + "\n".join(lines))
+
+
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """How much is stored, and whether the backup safety net is armed."""
     message = update.effective_message
@@ -251,6 +284,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("chatid", handle_chatid))
     application.add_handler(CommandHandler("recent", handle_recent))
     application.add_handler(CommandHandler("forget", handle_forget))
+    application.add_handler(CommandHandler("find", handle_find))
     application.add_handler(CommandHandler("status", handle_status))
     application.add_handler(CommandHandler("backup", handle_backup))
     application.add_handler(
