@@ -10,9 +10,10 @@ ingestion pipeline (Phase 3), voice/audio/video notes to local transcription
 else (stickers, contacts, polls) gets a plain "not supported" reply.
 """
 
+import asyncio
 import logging
 
-from telegram import Document, Update, VideoNote, Voice
+from telegram import Document, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -22,7 +23,7 @@ from telegram.ext import (
     filters,
 )
 
-from . import pipeline
+from . import backup, memory, pipeline
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,35 @@ _START_REPLY = (
     "Hi! I'm your second brain.\n"
     "Send me notes, links, reels, photos, voice notes or reminders and "
     "I'll remember them.\n"
-    "Ask me about anything you've saved and I'll answer from your memory."
+    "Ask me about anything you've saved and I'll answer from your memory.\n\n"
+    "Commands: /recent, /forget, /status, /backup, /help"
+)
+
+_HELP_REPLY = (
+    "What I do:\n"
+    "• *Notes* — just tell me something ('the spare key is under the mat') "
+    "and I'll keep it.\n"
+    "• *Questions* — ask normally ('where's the spare key?'). I answer only "
+    "from what you actually saved, and say so when I have nothing.\n"
+    "• *Reminders* — 'remind me about the dentist Sunday 9am'. I echo back "
+    "what I understood so a bad date is caught straight away.\n"
+    "• *Photos* — I read any text in them (and describe them if a vision "
+    "model is configured).\n"
+    "• *Voice notes* — transcribed locally, then treated like a text message.\n"
+    "• *Reels and video links* — downloaded, transcribed, on-screen text "
+    "read, then summarised. If a platform blocks me I save the link as a "
+    "bookmark and tell you I never saw the video.\n\n"
+    "Commands:\n"
+    "/recent — the last things I saved\n"
+    "/forget <number> — delete one of them (numbers come from /recent)\n"
+    "/status — how much I'm holding, and when I last backed up\n"
+    "/backup — snapshot the database to this chat right now\n"
+    "/chatid — show this chat's id (for OWNER_CHAT_ID)"
+)
+
+_NOT_OWNER_REPLY = (
+    "This is someone else's personal second brain — it only answers to its "
+    "owner."
 )
 
 _MEDIA_REPLY = (
@@ -40,10 +69,140 @@ _MEDIA_REPLY = (
 )
 
 
+def _is_owner(update: Update, settings: Settings) -> bool:
+    """Single-user tool: when OWNER_CHAT_ID is set, only that chat is served.
+
+    Left open when the id is unset so a fresh install is usable before you
+    know your own chat id (/chatid tells you).
+    """
+    if not settings.owner_chat_id:
+        return True
+    chat = update.effective_chat
+    return chat is not None and chat.id == settings.owner_chat_id
+
+
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if message is not None:
         await message.reply_text(_START_REPLY)
+
+
+async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if message is not None:
+        await message.reply_text(_HELP_REPLY)
+
+
+async def handle_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Report this chat's id — what OWNER_CHAT_ID needs to be set to."""
+    message = update.effective_message
+    if message is None:
+        return
+    await message.reply_text(
+        f"This chat's id is {message.chat_id}.\n"
+        "Set OWNER_CHAT_ID to it so I only answer to you and can back my "
+        "database up to this chat."
+    )
+
+
+async def handle_recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List the most recent memories, numbered for /forget."""
+    message = update.effective_message
+    if message is None:
+        return
+    chunks = await asyncio.to_thread(memory.recent_chunks, message.chat_id, 10)
+    if not chunks:
+        await message.reply_text("I haven't saved anything yet.")
+        return
+    lines = [
+        f"{chunk.id}. {_shorten(chunk.chunk_text)}"
+        f" — {chunk.created_at.strftime('%d %b')}"
+        for chunk in chunks
+    ]
+    await message.reply_text(
+        "Most recent first:\n" + "\n".join(lines) + "\n\nDelete one with /forget <number>."
+    )
+
+
+def _shorten(text: str, limit: int = 120) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "…"
+
+
+async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Delete one memory by the number shown in /recent."""
+    message = update.effective_message
+    if message is None:
+        return
+    args = context.args or []
+    if len(args) != 1 or not args[0].lstrip("-").isdigit():
+        await message.reply_text(
+            "Use /forget <number>, with a number from /recent."
+        )
+        return
+    deleted = await asyncio.to_thread(
+        memory.delete_chunk, message.chat_id, int(args[0])
+    )
+    if deleted is None:
+        await message.reply_text(
+            "I couldn't find a memory with that number — check /recent."
+        )
+        return
+    await message.reply_text(f"Forgotten: {_shorten(deleted)}")
+
+
+async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """How much is stored, and whether the backup safety net is armed."""
+    message = update.effective_message
+    if message is None:
+        return
+    settings: Settings = context.application.bot_data["settings"]
+    saved = await asyncio.to_thread(memory.count_chunks, message.chat_id)
+    pending = await asyncio.to_thread(
+        memory.count_pending_reminders, message.chat_id
+    )
+    if settings.owner_chat_id:
+        last = await asyncio.to_thread(backup.db.get_meta, "last_backup_at")
+        backup_line = (
+            f"Last backup: {last[:16].replace('T', ' ')} UTC"
+            if last
+            else "Last backup: none yet"
+        )
+    else:
+        backup_line = (
+            "Backups: OFF — set OWNER_CHAT_ID (see /chatid) or a redeploy "
+            "loses everything."
+        )
+    await message.reply_text(
+        f"{saved} memories saved.\n"
+        f"{pending} reminder(s) waiting.\n"
+        f"{backup_line}"
+    )
+
+
+async def handle_backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Force a snapshot to this chat right now."""
+    message = update.effective_message
+    if message is None:
+        return
+    settings: Settings = context.application.bot_data["settings"]
+    if not settings.owner_chat_id:
+        await message.reply_text(
+            "Backups are off: set OWNER_CHAT_ID to this chat's id (/chatid) "
+            "and restart me."
+        )
+        return
+    if await backup.back_up(settings, context.bot):
+        await message.reply_text(
+            "Backed up and pinned. If my disk is ever wiped I'll restore "
+            "from that pinned file on my next boot."
+        )
+    else:
+        await message.reply_text(
+            "The backup didn't go through — check my logs. Nothing was lost."
+        )
 
 
 def _is_image_document(document: Document) -> bool:
@@ -55,6 +214,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Route each supported message type to its pipeline."""
     message = update.effective_message
     if message is None:
+        return
+    settings: Settings = context.application.bot_data["settings"]
+    if not _is_owner(update, settings):
+        logger.warning("ignoring message from non-owner chat %s", message.chat_id)
+        await message.reply_text(_NOT_OWNER_REPLY)
         return
     if message.text:
         await pipeline.handle_text_message(update, context)
@@ -81,6 +245,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def register_handlers(application: Application) -> None:
     """Register the update handlers shared by webhook and polling modes."""
     application.add_handler(CommandHandler("start", handle_start))
+    application.add_handler(CommandHandler("help", handle_help))
+    application.add_handler(CommandHandler("chatid", handle_chatid))
+    application.add_handler(CommandHandler("recent", handle_recent))
+    application.add_handler(CommandHandler("forget", handle_forget))
+    application.add_handler(CommandHandler("status", handle_status))
+    application.add_handler(CommandHandler("backup", handle_backup))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )

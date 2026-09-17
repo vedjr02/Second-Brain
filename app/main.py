@@ -16,7 +16,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI, HTTPException, Request
 from telegram import Bot, Update
 
-from . import reminders
+from . import backup, reminders
 from .db import setup_schema
 from .settings import Settings, load_settings
 from .telegram import build_application
@@ -37,6 +37,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.ptb = application
 
+    setup_schema()
+    # A free host's disk does not survive a redeploy, so an empty database
+    # here may mean "wiped", not "new" — pull the pinned Telegram snapshot
+    # back down before serving anything.
+    await backup.restore_if_empty(settings, application.bot)
     setup_schema()
     logger.info("database schema ready (sqlite tables)")
 
@@ -107,4 +112,7 @@ async def check_reminders(request: Request) -> dict[str, int | bool]:
         raise HTTPException(status_code=403, detail="invalid bearer token")
 
     sent = await reminders.fire_due_reminders(settings, get_bot())
-    return {"ok": True, "sent": sent}
+    # The cron tick is the only heartbeat a webhook-mode service gets, so it
+    # doubles as the backup scheduler (backup.maybe_back_up rate-limits itself).
+    backed_up = await backup.maybe_back_up(settings, get_bot())
+    return {"ok": True, "sent": sent, "backed_up": backed_up}

@@ -136,6 +136,7 @@ async def _answer_question(
         chat_id=chat_id,
         top_k=settings.search_top_k,
         threshold=settings.similarity_threshold,
+        query_text=text,
     )
     chunks = [chunk for chunk, _similarity in results]
     answer = await asyncio.to_thread(llm.answer, text, chunks)

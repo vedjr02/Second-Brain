@@ -79,15 +79,56 @@ transcribed it, ffmpeg + pytesseract ran on its keyframes, and the Kimi call
 returned — with the clip having no speech and no on-screen text, the pipeline
 correctly reported that it understood nothing rather than inventing a summary.
 
+## Second session (17 September 2026) — durability, privacy, retrieval
+
+The remaining blocker was never Neon vs SQLite; it was that a free host has no
+durable disk. Solved without adding any service: **the database backs itself
+up to Telegram**, which is already the blob store for media.
+
+- `app/backup.py`: a consistent snapshot (SQLite's online backup API, not a
+  file copy) is sent to the owner's chat every 6 hours and **pinned**. Pinning
+  is what makes recovery possible — after a wipe nothing remains that knows
+  where the backup went, but `getChat` hands back the pinned message and its
+  `file_id`. On boot, an empty database restores itself from that file before
+  the bot serves anything.
+- Restore only runs against an empty database, so it can never clobber live
+  memories. A failed backup is not recorded as successful, so it retries at
+  the next tick instead of being skipped for hours.
+- The cron tick that already fires reminders doubles as the backup scheduler —
+  a webhook-mode service gets no other heartbeat.
+
+**Privacy**: a bot username is public, so anyone who found yours could write
+to your brain. Setting `OWNER_CHAT_ID` now locks the bot to your chat (and is
+the same value the backup needs). Left open when unset so a fresh install is
+usable before you know your chat id — `/chatid` tells you.
+
+**Retrieval got substantially better.** Pure vector search is weak at exactly
+what a second brain stores: phone numbers, names, passwords, product names —
+rare tokens with no useful embedding that nonetheless match literally. Every
+chunk is now scored twice (cosine similarity + the fraction of the question's
+distinctive words it contains) and retrieved when either is convincing.
+Verified live: "what was the electrician's number?" now finds "Dave the
+electrician: 07700 900123", which pure cosine missed, and asking about "my
+sister's flight" when only Mum's flight is saved still correctly answers
+"I don't have anything saved about that yet."
+
+**Commands added**: `/help`, `/recent`, `/forget <n>`, `/status`, `/backup`,
+`/chatid` — the "no way to list or delete memories" gap from the last session.
+
+Tests: 86 → 105 (new `tests/test_backup.py`, owner-gate and command tests,
+hybrid-retrieval tests against a real temp database).
+
 ## Known gaps / next steps
 
-- **Render free tier wipes the SQLite file on redeploy.** Attach a Render Disk
-  and set `SQLITE_PATH=/var/data/second_brain.db` before relying on it.
+- **Set `OWNER_CHAT_ID` before relying on this.** Until it is set the bot is
+  open to anyone who finds it AND has no backups — the two things that make it
+  actually yours. Send `/chatid`, put the number in the env, restart.
 - `LLM_VISION_MODEL` is unset, so photos without readable text are stored but
   not searchable. Set it to a Kimi VL model to enable one-line descriptions.
 - Long notes are stored as a single chunk — fine for short personal notes,
   worth splitting if long articles get forwarded often.
-- No way to list, edit, or delete saved memories from chat (e.g. `/recent`,
-  "forget that"); everything is append-only today.
+- Editing a memory in place is still not possible (delete and re-send).
+- The backup has never been exercised against a live Telegram chat — the logic
+  is covered by tests, but the first real `/backup` is worth watching.
 - yt-dlp needs periodic upgrades; platforms break scrapers regularly. The
   bookmark fallback means a stale yt-dlp degrades quietly rather than breaking.

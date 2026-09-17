@@ -23,11 +23,12 @@ app/
   voice.py       Phase 4: local faster-whisper transcription (lazy-loaded model)
   reels.py       Phase 5: yt-dlp download, ffmpeg keyframes, OCR + LLM summary
   reminders.py   Phase 2 worker: claims due reminders and pushes them to Telegram
+  backup.py      Snapshots the database to Telegram and restores it after a wipe
   db.py          SQLite access (WAL), schema (messages/memory_chunks/reminders), probe
   settings.py    Env-based settings, fails loudly if anything required is missing
 scripts/
   check_db.py    Standalone DB check: schema + insert/read/delete probe
-tests/           86 offline tests (endpoints, secret auth, routing, reminders, photos, LLM parsing)
+tests/           105 offline tests (endpoints, secret auth, routing, reminders, photos, LLM parsing)
 .github/workflows/check-reminders.yml  cron: POST /check-reminders every minute
 ```
 
@@ -53,7 +54,7 @@ tests/           86 offline tests (endpoints, secret auth, routing, reminders, p
    cp .env.example .env          # fill in TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, LLM_API_KEY
    python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
    .venv/bin/python -m scripts.check_db        # must print probe JSON, no error
-   .venv/bin/python -m pytest -q               # 86 passed
+   .venv/bin/python -m pytest -q               # 105 passed
    .venv/bin/python -m mypy                    # no issues
    ```
    `check_db` proves: the SQLite file is live, schema created, row insert → read → delete works.
@@ -102,6 +103,8 @@ photo/voice/video pipelines behave identically to local.
 2. Render dashboard → **New → Web Service** → connect the repo.
 3. Runtime: **Docker** (auto-detected from the Dockerfile).
 4. Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `LLM_API_KEY`,
+   `OWNER_CHAT_ID=<your chat id>` (strongly recommended — it is what makes the
+   bot private and its data survive redeploys),
    `WEBHOOK_BASE_URL=https://<your-service>.onrender.com`,
    `USER_DISPLAY_TIMEZONE=<your IANA timezone>`,
    `REMINDER_CHECK_SECRET=<long random string>`, `LLM_MODEL=kimi-k2.6`
@@ -114,10 +117,11 @@ photo/voice/video pipelines behave identically to local.
    `REMINDER_CHECK_SECRET` (same value as the backend). The included workflow
    then fires due reminders every minute.
 
-**Persistence caveat**: Render free-tier disks are ephemeral — a redeploy
-wipes `second_brain.db`. Attach a Render Disk (paid) and set
-`SQLITE_PATH=/var/data/second_brain.db`, or accept losing saved memories on
-redeploys while testing.
+**Persistence**: Render free-tier disks are ephemeral — a redeploy wipes
+`second_brain.db`. Set `OWNER_CHAT_ID` (see below) and the bot backs itself up
+to your own Telegram chat and restores from there automatically, so a wipe
+costs you at most the last few hours. A Render Disk (paid) with
+`SQLITE_PATH=/var/data/second_brain.db` is the belt-and-braces option.
 
 ## Local polling vs webhook
 
@@ -140,6 +144,51 @@ redeploys while testing.
 - If the pipeline can't extract anything, the bot says so plainly: the image is
   stored (pointer kept) but marked not searchable — never pretended-understood.
 - Images over Telegram's 20 MB Bot API fetch cap are flagged, not silently dropped.
+
+## Durability: the database backs itself up to Telegram
+
+Free hosting has no durable disk, and the whole point of a second brain is
+that it does not forget. Telegram is already the blob store for media, so it
+stores the database too:
+
+- Every few hours (`BACKUP_INTERVAL_HOURS`, default 6) the bot takes a
+  consistent snapshot with SQLite's online backup API, sends it to your own
+  chat as a document, and **pins** it.
+- Pinning is the trick that makes recovery possible: after a wipe there is no
+  database left to remember where the backup went, but `getChat` returns the
+  pinned message to anyone who asks. On boot, if the database is empty, the
+  bot fetches that pinned file and restores it before serving a message.
+- Restore only ever runs against an empty database, so it can never overwrite
+  live memories. A failed backup is not recorded as done — it retries.
+- Setup: send the bot `/chatid`, put the number in `OWNER_CHAT_ID`, restart.
+  `/status` tells you when the last backup landed; `/backup` forces one now.
+
+Setting `OWNER_CHAT_ID` also locks the bot to you — a bot username is public,
+and without it anyone who finds yours can write to your memory.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `/help` | What the bot understands |
+| `/recent` | The last 10 saved memories, numbered |
+| `/forget <number>` | Delete one of them (numbers come from `/recent`) |
+| `/status` | How many memories, reminders pending, last backup |
+| `/backup` | Snapshot the database to this chat right now |
+| `/chatid` | This chat's id, for `OWNER_CHAT_ID` |
+
+## Retrieval: meaning *and* exact wording
+
+Embeddings alone are weak at exactly what a second brain is for — a phone
+number, a name, a wifi password. Those are rare tokens with no useful vector,
+but they match literally. So every chunk is scored twice: cosine similarity,
+and the fraction of the question's distinctive words it actually contains. A
+chunk is retrieved when either is convincing, which is why "what was the
+electrician's number?" finds "Dave the electrician: 07700 900123" even though
+the note never says the word "number".
+
+Over-retrieval is cheap here: answers are grounded, so an irrelevant excerpt
+is simply ignored, while a missed one makes the bot claim it never knew.
 
 ## Phase 1 semantics (per the build spec)
 

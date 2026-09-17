@@ -128,15 +128,25 @@ def insert_memory_chunk(
 
 
 def search_memory(
-    query_embedding: list[float], chat_id: int, top_k: int, threshold: float
+    query_embedding: list[float],
+    chat_id: int,
+    top_k: int,
+    threshold: float,
+    query_text: str = "",
 ) -> list[tuple[str, float]]:
-    """Top-k chunks for this chat by cosine similarity, above the threshold.
+    """Top-k chunks for this chat, ranked by meaning AND exact wording.
 
-    Returns (chunk_text, similarity) with similarity in 0..1 (L2-normed
-    embeddings make cosine == dot product), highest first, filtered to the
-    requesting chat.
+    Embeddings alone are weak at exactly what a second brain is for: a phone
+    number, a name, a wifi password, a product nobody paraphrases. Those are
+    rare tokens the model has no useful vector for, but they match literally.
+    So each chunk gets two scores — cosine similarity (0..1) and the fraction
+    of the question's distinctive words it literally contains — and a chunk is
+    retrieved when EITHER is convincing.
+
+    Returns (chunk_text, score), highest first, filtered to this chat.
     """
     q = _pack_vector(query_embedding)
+    terms = _keywords(query_text)
     with db.query() as conn:
         rows = conn.execute(
             """
@@ -150,11 +160,64 @@ def search_memory(
         ).fetchall()
     scored: list[tuple[str, float]] = []
     for row in rows:
+        text = str(row["chunk_text"])
         similarity = _cosine(q, row["embedding"])
-        if similarity >= threshold:
-            scored.append((str(row["chunk_text"]), similarity))
+        overlap = _keyword_overlap(terms, text)
+        # Keyword hits lift a chunk's score but never outrank a genuinely
+        # closer meaning match; a strong literal match (most of the asked
+        # words present) is retrieved even when the vectors disagree.
+        score = min(1.0, similarity + _KEYWORD_WEIGHT * overlap)
+        if similarity >= threshold or overlap >= _KEYWORD_RESCUE:
+            scored.append((text, score))
     scored.sort(key=lambda item: item[1], reverse=True)
     return scored[:top_k]
+
+
+# How much a full literal word overlap can lift a chunk's score, and how much
+# overlap on its own is enough to retrieve a chunk the vectors would have
+# missed. Half is deliberately generous: asking "what was the electrician's
+# number?" about a note reading "Dave the electrician: 07700 900123" matches
+# only one of the two asked words, and that has to be enough. Over-retrieval
+# is cheap here — the answer is grounded, so an irrelevant excerpt just gets
+# ignored, while a missed one makes the bot claim it never knew.
+_KEYWORD_WEIGHT = 0.3
+_KEYWORD_RESCUE = 0.5
+
+# Words carrying no retrieval signal — questions are mostly made of these.
+_STOPWORDS = frozenset(
+    """a an and are as at be but by can did do does for from had has have how i
+    if in is it its me my of on or so than that the their them then there these
+    they this to was we were what when where which who whom why will with you
+    your about again all am any because been before being could would should
+    just like get got tell show find remember saved save please""".split()
+)
+
+
+def _keywords(text: str) -> set[str]:
+    """Distinctive words of a question: lowercased, stopwords dropped.
+
+    Numbers are always kept however short — '9am', '555', a house number or a
+    year is exactly the kind of token that makes a memory findable.
+    """
+    words = "".join(c.lower() if c.isalnum() else " " for c in text).split()
+    return {
+        word
+        for word in words
+        if word not in _STOPWORDS and (len(word) > 2 or word.isdigit())
+    }
+
+
+def _keyword_overlap(terms: set[str], chunk_text: str) -> float:
+    """Fraction of the question's distinctive words present in the chunk."""
+    if not terms:
+        return 0.0
+    chunk_words = _keywords(chunk_text)
+    hits = sum(
+        1
+        for term in terms
+        if term in chunk_words or any(term in word for word in chunk_words)
+    )
+    return hits / len(terms)
 
 
 def save_reminder(
@@ -290,3 +353,88 @@ def _parse_iso(value: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+@dataclass(frozen=True)
+class SavedChunk:
+    """A stored memory chunk with the day it was saved."""
+
+    id: int
+    chunk_text: str
+    created_at: datetime
+
+
+def recent_chunks(chat_id: int, limit: int) -> list[SavedChunk]:
+    """The most recently saved memories for this chat, newest first."""
+    with db.query() as conn:
+        rows = conn.execute(
+            """
+            SELECT mc.id, mc.chunk_text, mc.created_at
+              FROM memory_chunks mc
+              JOIN messages m ON m.id = mc.source_message_id
+             WHERE m.chat_id = ?
+             ORDER BY mc.id DESC
+             LIMIT ?
+            """,
+            (chat_id, limit),
+        ).fetchall()
+    return [
+        SavedChunk(
+            id=int(row["id"]),
+            chunk_text=str(row["chunk_text"]),
+            created_at=_parse_iso(str(row["created_at"])),
+        )
+        for row in rows
+    ]
+
+
+def delete_chunk(chat_id: int, chunk_id: int) -> str | None:
+    """Delete one memory chunk owned by this chat; returns its text.
+
+    Scoped by chat_id so a chunk id from someone else's chat can never be
+    deleted. Returns None when there was nothing to delete.
+    """
+    with db.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT mc.id, mc.chunk_text
+              FROM memory_chunks mc
+              JOIN messages m ON m.id = mc.source_message_id
+             WHERE mc.id = ? AND m.chat_id = ?
+            """,
+            (chunk_id, chat_id),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM memory_chunks WHERE id = ?", (chunk_id,))
+    return str(row["chunk_text"])
+
+
+def count_chunks(chat_id: int) -> int:
+    """How many memories this chat has saved (for /status)."""
+    with db.query() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+              FROM memory_chunks mc
+              JOIN messages m ON m.id = mc.source_message_id
+             WHERE m.chat_id = ?
+            """,
+            (chat_id,),
+        ).fetchone()
+    return 0 if row is None else int(row["n"])
+
+
+def count_pending_reminders(chat_id: int) -> int:
+    """Unfired reminders still waiting for this chat."""
+    with db.query() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+              FROM reminders r
+              JOIN messages m ON m.id = r.source_message_id
+             WHERE m.chat_id = ? AND r.fired = 0
+            """,
+            (chat_id,),
+        ).fetchone()
+    return 0 if row is None else int(row["n"])

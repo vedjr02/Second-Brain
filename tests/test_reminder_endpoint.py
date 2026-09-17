@@ -92,7 +92,7 @@ def test_fires_with_correct_bearer_token(
         "/check-reminders", headers={"Authorization": "Bearer cron-secret"}
     )
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "sent": 2}
+    assert resp.json() == {"ok": True, "sent": 2, "backed_up": False}
     assert len(fired) == 1
     settings, bot = fired[0]
     assert settings.reminder_check_secret == "cron-secret"

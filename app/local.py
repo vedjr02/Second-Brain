@@ -13,7 +13,7 @@ For production (Render + GitHub Actions cron) the webhook entrypoint
 import asyncio
 import logging
 
-from . import reminders
+from . import backup, reminders
 from .db import setup_schema
 from .settings import load_settings
 from .telegram import build_application
@@ -34,6 +34,8 @@ async def run() -> None:
     await application.start()
     await updater.start_polling(drop_pending_updates=True)
     setup_schema()
+    await backup.restore_if_empty(settings, application.bot)
+    setup_schema()
     logger.info("database ready")
 
     # Local-only convenience: check due reminders every 30s (the production
@@ -42,6 +44,7 @@ async def run() -> None:
         while True:
             try:
                 await reminders.fire_due_reminders(settings, application.bot)
+                await backup.maybe_back_up(settings, application.bot)
             except Exception:
                 logger.exception("local reminder check failed")
             await asyncio.sleep(30)

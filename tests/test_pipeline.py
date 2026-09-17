@@ -114,10 +114,11 @@ class FakeMemory:
 
     def search_memory(
         self, query_embedding: list[float], chat_id: int, top_k: int,
-        threshold: float,
+        threshold: float, query_text: str = "",
     ) -> list[tuple[str, float]]:
         self.searches.append(
-            {"chat_id": chat_id, "top_k": top_k, "threshold": threshold}
+            {"chat_id": chat_id, "top_k": top_k, "threshold": threshold,
+             "query_text": query_text}
         )
         return self.search_results
 
@@ -184,7 +185,10 @@ async def test_question_answers_from_retrieved_chunks(
 
     await pipeline.handle_text_message(update, context)
 
-    assert memory.searches == [{"chat_id": 42, "top_k": 3, "threshold": 0.5}]
+    assert memory.searches == [
+        {"chat_id": 42, "top_k": 3, "threshold": 0.5,
+         "query_text": "what is the wifi password?"}
+    ]
     assert gemini.answer_calls == [("what is the wifi password?",
                                     ["wifi is hunter2", "old note"])]
     assert _reply_text(update, _bot) == "the answer"

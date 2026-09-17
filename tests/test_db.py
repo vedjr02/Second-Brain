@@ -87,3 +87,76 @@ def test_missing_env_fails_loudly(
         monkeypatch.delenv(name, raising=False)
     with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
         load_settings()
+
+
+# --- hybrid retrieval: meaning plus exact wording ---------------------------
+
+
+def test_keywords_drop_question_noise_but_keep_numbers() -> None:
+    from app.memory import _keywords
+
+    assert _keywords("what was the electrician's number again?") == {
+        "electrician",
+        "number",
+    }
+    assert "555" in _keywords("call 555 at 9am")
+
+
+def test_keyword_overlap_scores_the_fraction_of_asked_words_present() -> None:
+    from app.memory import _keyword_overlap, _keywords
+
+    terms = _keywords("what is the wifi password")
+    assert _keyword_overlap(terms, "the wifi password is hunter2") == 1.0
+    assert _keyword_overlap(terms, "the wifi is flaky in the kitchen") == 0.5
+    assert _keyword_overlap(terms, "pasta recipe from a reel") == 0.0
+
+
+def test_rare_literal_match_is_retrieved_even_when_the_vectors_disagree(
+    temp_db: None,
+) -> None:
+    """The whole point of a second brain: exact tokens must be findable."""
+    from app import memory
+
+    db.setup_schema()
+
+    message_id = memory.save_message(
+        chat_id=1, telegram_message_id=1, direction="in", raw_type="text",
+        file_id=None, raw_content_text="Dave the electrician: 07700 900123",
+    )
+    memory.insert_memory_chunk(
+        source_message_id=message_id,
+        chunk_text="Dave the electrician: 07700 900123",
+        embedding=[0.0] * 384,  # a vector that matches nothing at all
+        tags=[],
+    )
+
+    results = memory.search_memory(
+        [0.0] * 384, chat_id=1, top_k=5, threshold=0.9,
+        query_text="what was the electrician's number?",
+    )
+
+    assert results and "900123" in results[0][0]
+
+
+def test_unrelated_memories_are_not_dragged_in_by_keywords(
+    temp_db: None,
+) -> None:
+    from app import memory
+
+    db.setup_schema()
+
+    message_id = memory.save_message(
+        chat_id=1, telegram_message_id=1, direction="in", raw_type="text",
+        file_id=None, raw_content_text="pasta recipe: garlic, chilli, oil",
+    )
+    memory.insert_memory_chunk(
+        source_message_id=message_id,
+        chunk_text="pasta recipe: garlic, chilli, oil",
+        embedding=[0.0] * 384,
+        tags=[],
+    )
+
+    assert memory.search_memory(
+        [0.0] * 384, chat_id=1, top_k=5, threshold=0.9,
+        query_text="what was the electrician's number?",
+    ) == []

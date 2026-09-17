@@ -45,6 +45,12 @@ class Settings:
     # Used to resolve relative reminder times and to echo "what was understood"
     # back in the user's local time (Phase 2).
     user_display_timezone: str = "UTC"
+    # Your own chat with the bot. Enables two things: restricting the bot to
+    # you, and backing the database up to that chat (see backup.py). Zero
+    # means "not configured" — both features stay off.
+    owner_chat_id: int = 0
+    # How often the database is snapshotted to Telegram.
+    backup_interval_hours: int = 6
     # Shared secret the GitHub Actions cron must present as a Bearer token when
     # calling POST /check-reminders. Empty disables the endpoint (404).
     reminder_check_secret: str = ""
@@ -85,5 +91,7 @@ def load_settings() -> Settings:
         user_display_timezone=_validated_timezone(
             os.getenv("USER_DISPLAY_TIMEZONE", "UTC")
         ),
+        owner_chat_id=int(os.getenv("OWNER_CHAT_ID", "0") or 0),
+        backup_interval_hours=int(os.getenv("BACKUP_INTERVAL_HOURS", "6")),
         reminder_check_secret=os.getenv("REMINDER_CHECK_SECRET", ""),
     )

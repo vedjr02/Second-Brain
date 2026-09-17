@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS reminders (
 
 CREATE INDEX IF NOT EXISTS idx_reminders_due
   ON reminders (fired, due_at);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 
@@ -157,3 +162,45 @@ def test_connection() -> dict[str, Any]:
         ),
         "probe_id": int(probe_row_id),
     }
+
+
+
+def get_meta(key: str) -> str | None:
+    """Read a small housekeeping value (last backup time, restore marker…)."""
+    with query() as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return None if row is None else str(row["value"])
+
+
+def set_meta(key: str, value: str) -> None:
+    with tx() as conn:
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+
+def snapshot_to_file(destination: str) -> None:
+    """Consistent copy of the live database, safe to take while it is in use.
+
+    Uses SQLite's own online backup API rather than copying the file: a plain
+    copy can catch a half-written page or miss the WAL entirely.
+    """
+    with _LOCK:
+        source = get_connection()
+        target = sqlite3.connect(destination)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+
+
+def is_empty() -> bool:
+    """True when this database has no saved memories yet (fresh or wiped)."""
+    try:
+        with query() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM messages").fetchone()
+    except sqlite3.DatabaseError:
+        return True
+    return row is None or int(row["n"]) == 0
