@@ -819,3 +819,15 @@ async def test_the_same_note_sent_twice_is_stored_once(
 
     assert memory.chunks == []
     assert _reply_text(update, _bot) == "Saved."
+
+
+def test_day_old_media_links_are_swept_away() -> None:
+    from datetime import timedelta
+
+    pipeline._LAST_MEDIA[7] = (
+        1, "photo", datetime.now(timezone.utc) - timedelta(days=2)
+    )
+    pipeline.note_media_message(8, 2, "photo")
+
+    assert 7 not in pipeline._LAST_MEDIA  # swept
+    assert 8 in pipeline._LAST_MEDIA  # fresh

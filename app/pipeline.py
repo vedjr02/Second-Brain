@@ -78,10 +78,28 @@ _STORED_WITHOUT_TEXT_REPLY = (
 # understood as its caption ("remember I want to post this tomorrow").
 _LAST_MEDIA: dict[int, tuple[int, str, datetime]] = {}
 
+# Nothing is kept longer than this regardless of configuration, so the map
+# cannot grow without bound.
+_MAX_MEDIA_LINK_SECONDS = 24 * 60 * 60
+
 
 def note_media_message(chat_id: int, message_id: int, label: str) -> None:
     """Record that this chat just sent a photo/voice/video."""
     _LAST_MEDIA[chat_id] = (message_id, label, datetime.now(UTC))
+    _expire_stale_media()
+
+
+def _expire_stale_media() -> None:
+    """Drop entries no window could still accept.
+
+    The map is keyed by chat and this is a single-user tool, so it cannot grow
+    much — but an unbounded dict that is never swept is a leak by default, and
+    a stale entry is also wrong, not just wasteful.
+    """
+    cutoff = datetime.now(UTC).timestamp() - _MAX_MEDIA_LINK_SECONDS
+    for chat_id, (_message_id, _label, when) in list(_LAST_MEDIA.items()):
+        if when.timestamp() < cutoff:
+            del _LAST_MEDIA[chat_id]
 
 
 def recent_media(chat_id: int, settings: Settings) -> tuple[int, str] | None:
