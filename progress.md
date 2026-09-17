@@ -152,6 +152,39 @@ captures a later unrelated note.
 
 Tests: 105 → 110.
 
+## Fourth session (18 September 2026) — the rest of the backlog
+
+Everything left on the list got built, in small commits pushed to
+`github.com/vedjr02/Second-Brain` as they landed.
+
+- **Buffered text survives a restart.** `grouping.flush_all()` is now wired
+  into both shutdown paths; a Ctrl+C inside the 8-second window used to drop
+  whatever had been typed.
+- **Long text is chunked.** Sentence-aligned, overlapping windows, applied to
+  notes and to reel/OCR transcripts. One MiniLM vector cannot represent a
+  whole article, so the middle of a long note was previously unretrievable.
+- **Media comes back.** When an answer comes from a photo, voice note or
+  video, the original file is re-sent with the answer. The row only ever kept
+  the `file_id`, so this costs nothing.
+- **Duplicates are skipped.** Word-for-word repeats are not stored twice.
+- **Commands**: `/find` (search with no model call), `/reminders`, `/cancel`,
+  `/export` (plain text, so the notes are never trapped in the bot),
+  `/timezone`. All registered with Telegram so they appear behind the "/"
+  button, with a test pinning the menu against the registered handlers so a
+  new command cannot be added and left hidden.
+- **Timezone is settable from chat** and stored in the database, beating the
+  env var. It was UTC, which would have fired every reminder at the wrong
+  hour. Reminder parsing, the confirmation echo, the fired message,
+  `/reminders` and `/status` all read the effective zone.
+- **Reel downloads distinguish "blocked by login" from "broken".** Instagram
+  and TikTok serve most posts only to a signed-in session;
+  `YTDLP_COOKIES_FROM_BROWSER` lets yt-dlp reuse a browser session, and the
+  failure reply now names that setting instead of vaguely blaming the platform.
+- **Stale media links are swept**, so the "text after a photo" map cannot grow
+  unbounded and a day-old photo cannot capture a new note.
+
+Tests: 110 → 140.
+
 ## Known gaps / next steps
 
 - **Not deployed.** It runs locally via `python -m app.local`, so it only
@@ -160,7 +193,8 @@ Tests: 105 → 110.
   not searchable. Set it to a Kimi VL model to enable one-line descriptions.
 - Long notes are stored as a single chunk — fine for short personal notes,
   worth splitting if long articles get forwarded often.
-- Editing a memory in place is still not possible (delete and re-send).
+- Editing a memory in place is still not possible (`/forget` then re-send).
+- `/timezone` has not been set yet — it is still UTC until you set it.
 - Asking to see a saved photo again does not re-fetch it from Telegram yet;
   the `file_id` is kept, so the plumbing for it exists.
 - yt-dlp needs periodic upgrades; platforms break scrapers regularly. The
