@@ -34,7 +34,7 @@ from . import memory, reels, voice
 from .embeddings import embed_texts, split_for_embedding
 from .llm import Classification, LLMVisionUnavailableError, ReminderParseError
 from .llm import get_llm
-from .settings import Settings
+from .settings import Settings, effective_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -233,11 +233,9 @@ async def _handle_reminder(
     """
     llm = get_llm(settings)
     try:
+        tz_name = await asyncio.to_thread(effective_timezone, settings)
         spec = await asyncio.to_thread(
-            llm.parse_reminder,
-            text,
-            utc_now_iso(),
-            settings.user_display_timezone,
+            llm.parse_reminder, text, utc_now_iso(), tz_name
         )
     except ReminderParseError:
         logger.warning(
@@ -259,15 +257,13 @@ async def _handle_reminder(
         message_id, text, classification, settings, message.chat_id
     )
     memory.save_reminder(message_id, spec.what, due_at)
-    await message.reply_text(
-        _reminder_confirmation(spec.what, due_at, settings.user_display_timezone)
-    )
+    await message.reply_text(_reminder_confirmation(spec.what, due_at, tz_name))
 
 
 def _coerce_utc(due_at: datetime, settings: Settings) -> datetime:
     """The LLM is told to return an offset; attach the display tz if it didn't."""
     if due_at.tzinfo is None:
-        return due_at.replace(tzinfo=ZoneInfo(settings.user_display_timezone))
+        return due_at.replace(tzinfo=ZoneInfo(effective_timezone(settings)))
     return due_at
 
 

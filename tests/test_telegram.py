@@ -180,8 +180,8 @@ def test_build_application_registers_handlers() -> None:
     settings = _settings()
     application = build_application(settings)
     group_zero = application.handlers[0]
-    # 11 commands + the text handler + the non-text handler
-    assert len(group_zero) == 13
+    # 12 commands + the text handler + the non-text handler
+    assert len(group_zero) == 14
     assert application.bot_data["settings"] is settings
     assert application.updater is None  # webhook mode: no polling updater
 
@@ -479,3 +479,54 @@ async def test_a_failed_command_menu_never_breaks_startup(
     application.bot.set_my_commands = AsyncMock(side_effect=RuntimeError("offline"))
 
     await telegram_module.publish_command_menu(application)  # must not raise
+
+
+async def test_timezone_without_arguments_reports_the_current_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        telegram_module, "effective_timezone", lambda settings: "Asia/Kolkata"
+    )
+    bot = AsyncMock()
+    update = _text_update("/timezone", bot)
+    context = _context()
+    context.args = []
+
+    await telegram_module.handle_timezone(update, context)
+
+    assert "Asia/Kolkata" in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_timezone_sets_a_valid_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+    applied: list[str] = []
+    monkeypatch.setattr(
+        telegram_module,
+        "set_stored_timezone",
+        lambda name: applied.append(name) or name,
+    )
+    bot = AsyncMock()
+    update = _text_update("/timezone Asia/Kolkata", bot)
+    context = _context()
+    context.args = ["Asia/Kolkata"]
+
+    await telegram_module.handle_timezone(update, context)
+
+    assert applied == ["Asia/Kolkata"]
+    assert "now shown in Asia/Kolkata" in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_timezone_rejects_nonsense_without_changing_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(name: str) -> str:
+        raise RuntimeError("USER_DISPLAY_TIMEZONE='Mars/Olympus' is not a valid IANA timezone")
+
+    monkeypatch.setattr(telegram_module, "set_stored_timezone", boom)
+    bot = AsyncMock()
+    update = _text_update("/timezone Mars/Olympus", bot)
+    context = _context()
+    context.args = ["Mars/Olympus"]
+
+    await telegram_module.handle_timezone(update, context)
+
+    assert "not a valid IANA timezone" in bot.send_message.await_args.kwargs["text"]

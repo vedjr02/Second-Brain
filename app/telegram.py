@@ -27,7 +27,7 @@ from telegram.ext import (
 
 from . import backup, grouping, memory, pipeline
 from .embeddings import embed_texts
-from .settings import Settings
+from .settings import Settings, effective_timezone, set_stored_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ _HELP_REPLY = (
     "/find <words> — search your memories without spending a model call\n"
     "/reminders — what is still going to fire\n"
     "/cancel <number> — call one of them off\n"
+    "/timezone <zone> — the timezone I show and parse times in\n"
     "/status — how much I'm holding, and when I last backed up\n"
     "/export — every memory as a plain text file\n"
     "/backup — snapshot the database to this chat right now\n"
@@ -203,7 +204,7 @@ async def handle_reminders(
     if not pending:
         await message.reply_text("No reminders waiting.")
         return
-    tz = ZoneInfo(settings.user_display_timezone)
+    tz = ZoneInfo(await asyncio.to_thread(effective_timezone, settings))
     lines = [
         f"{item.id}. {_shorten(item.reminder_text, 80)}"
         f" — {item.due_at.astimezone(tz).strftime('%a %d %b %H:%M')}"
@@ -259,6 +260,33 @@ async def handle_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         document=payload,
         filename="second-brain-export.txt",
         caption=f"{len(chunks)} memories, oldest first.",
+    )
+
+
+async def handle_timezone(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Show or change the timezone reminders are parsed and shown in."""
+    message = update.effective_message
+    if message is None:
+        return
+    settings: Settings = context.application.bot_data["settings"]
+    args = context.args or []
+    if not args:
+        current = await asyncio.to_thread(effective_timezone, settings)
+        await message.reply_text(
+            f"Times are shown in {current}.\n"
+            "Change it with /timezone Asia/Kolkata (any IANA name)."
+        )
+        return
+    try:
+        applied = await asyncio.to_thread(set_stored_timezone, args[0])
+    except RuntimeError as exc:
+        await message.reply_text(str(exc))
+        return
+    await message.reply_text(
+        f"Times are now shown in {applied}. Existing reminders keep the exact "
+        "moment they were set for — only how I display them changes."
     )
 
 
@@ -364,6 +392,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("reminders", handle_reminders))
     application.add_handler(CommandHandler("cancel", handle_cancel))
     application.add_handler(CommandHandler("export", handle_export))
+    application.add_handler(CommandHandler("timezone", handle_timezone))
     application.add_handler(CommandHandler("status", handle_status))
     application.add_handler(CommandHandler("backup", handle_backup))
     application.add_handler(
@@ -383,6 +412,7 @@ COMMAND_MENU: list[tuple[str, str]] = [
     ("export", "Every memory as a text file"),
     ("status", "What I am holding, and last backup"),
     ("backup", "Snapshot the database to this chat"),
+    ("timezone", "Show or set your timezone"),
     ("chatid", "This chat's id"),
     ("help", "What I understand"),
 ]

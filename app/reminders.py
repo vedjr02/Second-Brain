@@ -20,7 +20,7 @@ from telegram import Bot
 from telegram.error import TelegramError
 
 from . import memory, pipeline
-from .settings import Settings
+from .settings import Settings, effective_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ async def _fire_one(settings: Settings, bot: Bot, reminder: memory.DueReminder) 
         what=reminder.reminder_text,
         due_at=reminder.due_at,
         created_at=reminder.created_at,
-        tz_name=settings.user_display_timezone,
+        tz_name=await asyncio.to_thread(effective_timezone, settings),
     )
     try:
         sent = await bot.send_message(chat_id=reminder.chat_id, text=text)
