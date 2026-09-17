@@ -531,3 +531,21 @@ async def test_timezone_rejects_nonsense_without_changing_anything(
     await telegram_module.handle_timezone(update, context)
 
     assert "not a valid IANA timezone" in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_status_reports_the_effective_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(telegram_module.memory, "count_chunks", lambda chat_id: 1)
+    monkeypatch.setattr(
+        telegram_module.memory, "count_pending_reminders", lambda chat_id: 0
+    )
+    monkeypatch.setattr(
+        telegram_module, "effective_timezone", lambda settings: "Asia/Kolkata"
+    )
+    bot = AsyncMock()
+    update = _text_update("/status", bot)
+
+    await telegram_module.handle_status(update, _context())
+
+    assert "Timezone: Asia/Kolkata" in bot.send_message.await_args.kwargs["text"]

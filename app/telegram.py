@@ -312,9 +312,11 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "Backups: OFF — set OWNER_CHAT_ID (see /chatid) or a redeploy "
             "loses everything."
         )
+    zone = await asyncio.to_thread(effective_timezone, settings)
     await message.reply_text(
         f"{saved} memories saved.\n"
         f"{pending} reminder(s) waiting.\n"
+        f"Timezone: {zone}\n"
         f"{backup_line}"
     )
 
