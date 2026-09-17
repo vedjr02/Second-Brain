@@ -157,3 +157,4 @@ redeploys while testing.
 No voice notes or video ingestion (Phases 4–5), no chunking of long notes, no
 per-photo classification beyond the vision one-liner, no auth beyond the
 webhook + cron secrets.
+# Second-Brain
