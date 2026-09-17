@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.env
+second_brain.db
+second_brain.db-wal
+second_brain.db-shm
+.freebuff/

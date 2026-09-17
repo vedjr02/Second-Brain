@@ -1,0 +1,39 @@
+# Pings the backend every minute so due reminders actually fire (webhooks are
+# passive and cannot act on a timer by themselves).
+#
+# Setup (one-time, in your GitHub repo):
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#   - REMINDER_BASE_URL       e.g. https://your-service.onrender.com
+#   - REMINDER_CHECK_SECRET   must equal the backend's REMINDER_CHECK_SECRET
+#
+# Notes:
+# - GitHub scheduled workflows can start a few minutes late; overlapping or
+#   skipped minutes are handled by the backend (atomic claim + "due_at <= now").
+# - Scheduled workflows only run on the default branch, and GitHub disables
+#   them after 60 days of no repo activity (re-enable in the Actions tab).
+name: check-reminders
+
+on:
+  schedule:
+    - cron: "* * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: check-reminders
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fire due reminders
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+            -X POST "${{ secrets.REMINDER_BASE_URL }}/check-reminders" \
+            -H "Authorization: Bearer ${{ secrets.REMINDER_CHECK_SECRET }}")
+          echo "/check-reminders -> $code"
+          case "$code" in
+            200) exit 0 ;;
+            *) echo "unexpected status from backend" ; exit 1 ;;
+          esac
