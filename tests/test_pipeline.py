@@ -97,6 +97,7 @@ class FakeMemory:
         self.saved_day: str | None = None
         self.updated_content: list[tuple[int, str]] = []
         self.media_pointer: Any = None
+        self.existing_chunk_texts: set[str] = set()
 
     def save_message(self, **kwargs: Any) -> int:
         self.saved.append(kwargs)
@@ -137,6 +138,9 @@ class FakeMemory:
 
     def media_for_chunk_text(self, chat_id: int, chunk_text: str) -> Any:
         return self.media_pointer
+
+    def chunk_exists(self, chat_id: int, chunk_text: str) -> bool:
+        return chunk_text in self.existing_chunk_texts
 
 
 @pytest.fixture(autouse=True)
@@ -800,3 +804,18 @@ async def test_a_text_only_answer_sends_no_media(
     await pipeline.handle_text_message(update, context)
 
     assert bot.send_photo.await_count == 0
+
+
+async def test_the_same_note_sent_twice_is_stored_once(
+    fakes: tuple[FakeGemini, FakeMemory],
+) -> None:
+    _gemini, memory = fakes
+    memory.existing_chunk_texts.add("the spare key is under the mat")
+    update, _bot = _text_update("the spare key is under the mat")
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    assert memory.chunks == []
+    assert _reply_text(update, _bot) == "Saved."

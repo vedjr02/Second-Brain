@@ -537,3 +537,24 @@ def cancel_reminder(chat_id: int, reminder_id: int) -> str | None:
             return None
         conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
     return str(row["reminder_text"])
+
+
+def chunk_exists(chat_id: int, chunk_text: str) -> bool:
+    """Whether this exact text is already stored for this chat.
+
+    Forwarding the same link twice or re-sending a note you already sent is
+    normal behaviour; storing it twice makes retrieval noisier and /recent
+    repetitive, with nothing gained.
+    """
+    with db.query() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+              FROM memory_chunks mc
+              JOIN messages m ON m.id = mc.source_message_id
+             WHERE m.chat_id = ? AND mc.chunk_text = ?
+             LIMIT 1
+            """,
+            (chat_id, chunk_text),
+        ).fetchone()
+    return row is not None

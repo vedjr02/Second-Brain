@@ -701,7 +701,7 @@ async def _store_note_async(
         if media is not None:
             target, linked = media
             clear_recent_media(chat_id)
-    await asyncio.to_thread(_store_note, target, text, classification)
+    await asyncio.to_thread(_store_note, target, text, classification, chat_id)
     return linked
 
 
@@ -709,6 +709,7 @@ def _store_note(
     message_id: int,
     text: str,
     classification: Classification,
+    chat_id: int | None = None,
 ) -> None:
     """Embed the note text and persist it as a memory chunk.
 
@@ -721,6 +722,9 @@ def _store_note(
     saved_day = memory.get_message_saved_day(message_id)
     for piece, vec in zip(pieces, vectors):
         chunk_text = f"{piece} (saved {saved_day})" if saved_day else piece
+        if chat_id is not None and memory.chunk_exists(chat_id, chunk_text):
+            logger.info("skipping duplicate memory for chat %s", chat_id)
+            continue
         memory.insert_memory_chunk(
             source_message_id=message_id,
             chunk_text=chunk_text,
