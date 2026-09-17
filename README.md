@@ -29,7 +29,7 @@ app/
   settings.py    Env-based settings, fails loudly if anything required is missing
 scripts/
   check_db.py    Standalone DB check: schema + insert/read/delete probe
-tests/           110 offline tests (endpoints, secret auth, routing, reminders, photos, LLM parsing)
+tests/           140 offline tests (endpoints, secret auth, routing, reminders, photos, LLM parsing)
 .github/workflows/check-reminders.yml  cron: POST /check-reminders every minute
 ```
 
@@ -55,7 +55,7 @@ tests/           110 offline tests (endpoints, secret auth, routing, reminders, 
    cp .env.example .env          # fill in TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, LLM_API_KEY
    python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
    .venv/bin/python -m scripts.check_db        # must print probe JSON, no error
-   .venv/bin/python -m pytest -q               # 110 passed
+   .venv/bin/python -m pytest -q               # 140 passed
    .venv/bin/python -m mypy                    # no issues
    ```
    `check_db` proves: the SQLite file is live, schema created, row insert → read → delete works.
@@ -173,10 +173,17 @@ and without it anyone who finds yours can write to your memory.
 |---|---|
 | `/help` | What the bot understands |
 | `/recent` | The last 10 saved memories, numbered |
+| `/find <words>` | Search memories without spending a model call |
 | `/forget <number>` | Delete one of them (numbers come from `/recent`) |
-| `/status` | How many memories, reminders pending, last backup |
+| `/reminders` | What is still going to fire, in your timezone |
+| `/cancel <number>` | Call off a pending reminder |
+| `/export` | Every memory as a plain text file |
+| `/timezone <zone>` | Show or set the timezone times are shown in |
+| `/status` | Memories held, reminders pending, timezone, last backup |
 | `/backup` | Snapshot the database to this chat right now |
 | `/chatid` | This chat's id, for `OWNER_CHAT_ID` |
+
+They are registered with Telegram, so they appear behind the "/" button.
 
 ## Talking in bursts
 
@@ -206,6 +213,15 @@ the note never says the word "number".
 
 Over-retrieval is cheap here: answers are grounded, so an irrelevant excerpt
 is simply ignored, while a missed one makes the bot claim it never knew.
+
+Long notes and reel transcripts are split into overlapping, sentence-aligned
+chunks before embedding — one MiniLM vector cannot represent a whole article,
+so without splitting its middle is unretrievable. Text already saved word for
+word is not stored twice.
+
+When an answer comes from a photo, voice note or video, the original file is
+sent back with it: the database only ever kept the Telegram `file_id`, so
+showing you the actual photo costs nothing.
 
 ## Phase 1 semantics (per the build spec)
 
@@ -245,6 +261,10 @@ is simply ignored, while a missed one makes the bot claim it never knew.
   works even when the venv's `bin/` is not on `PATH`.
 - Uploaded videos take the same extraction path via a Telegram fetch (flagged,
   not dropped, over the 20 MB cap).
+- Instagram and TikTok serve most posts only to a signed-in session. Set
+  `YTDLP_COOKIES_FROM_BROWSER=chrome` (or `firefox`) to let yt-dlp reuse your
+  browser session; without it those reels can only be bookmarked, and the bot
+  now says so specifically instead of blaming the platform vaguely.
 - **Rule 5 fallback**: if the download fails (private post, platform block) or
   nothing intelligible comes out (music-only reel), the link + caption is
   stored as a plain bookmark and the bot says exactly that — "I never saw the
