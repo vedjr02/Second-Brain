@@ -831,3 +831,41 @@ def test_day_old_media_links_are_swept_away() -> None:
 
     assert 7 not in pipeline._LAST_MEDIA  # swept
     assert 8 in pipeline._LAST_MEDIA  # fresh
+
+
+async def test_a_login_blocked_reel_says_how_to_fix_it(
+    fakes: tuple[FakeGemini, FakeMemory], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.reels import DownloadError
+
+    def blocked(*_args: Any, **_kwargs: Any) -> str:
+        raise DownloadError("login required", login_required=True)
+
+    monkeypatch.setattr(pipeline.reels, "process_video_link", blocked)
+    update, _bot = _text_update("https://instagram.com/reel/abc")
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    reply = _reply_text(update, _bot)
+    assert "signed-in account" in reply
+    assert "YTDLP_COOKIES_FROM_BROWSER" in reply
+
+
+async def test_an_ordinary_download_failure_keeps_the_plain_message(
+    fakes: tuple[FakeGemini, FakeMemory], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.reels import DownloadError
+
+    def broken(*_args: Any, **_kwargs: Any) -> str:
+        raise DownloadError("Unsupported URL")
+
+    monkeypatch.setattr(pipeline.reels, "process_video_link", broken)
+    update, _bot = _text_update("https://example.com/whatever")
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    assert "never saw the video itself" in _reply_text(update, _bot)

@@ -63,6 +63,12 @@ _BOOKMARK_FALLBACK_REPLY = (
     "the link as a plain bookmark — searchable by its link and caption, but "
     "I never saw the video itself."
 )
+_BOOKMARK_LOGIN_REPLY = (
+    "That platform only shows this post to a signed-in account, so I couldn't "
+    "watch it. I saved the link and your caption as a bookmark. To let me "
+    "watch these, set YTDLP_COOKIES_FROM_BROWSER=chrome (or firefox) and "
+    "restart me."
+)
 _BOOKMARK_ONLY_REPLY = (
     "I got the video but couldn't make out anything in it (no speech, no "
     "on-screen text), so I saved it as a plain bookmark — I never understood "
@@ -391,6 +397,18 @@ async def _handle_video_link(
             combined = await asyncio.to_thread(
                 reels.process_video_link, settings, url, caption, tmp
             )
+        except reels.DownloadError as exc:
+            logger.warning(
+                "reel download failed for chat %s (login_required=%s)",
+                message.chat_id,
+                exc.login_required,
+            )
+            await _store_note_async(message_id, text, classification)
+            await message.reply_text(
+                _BOOKMARK_LOGIN_REPLY if exc.login_required
+                else _BOOKMARK_FALLBACK_REPLY
+            )
+            return
         except Exception:
             logger.exception(
                 "reel processing failed for chat %s; storing as bookmark",
