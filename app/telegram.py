@@ -1,11 +1,13 @@
-"""Telegram Bot API wiring (webhook mode) and Phase 1-3 handler registration.
+"""Telegram Bot API wiring (webhook mode) and Phase 1-5 handler registration.
 
 The Application runs with `updater=None`: Telegram pushes updates to our
 FastAPI webhook endpoint, which calls `application.process_update` directly.
 No polling loop, no persistent connection (webhook mode per the build spec).
 
 Text goes to the classification pipeline (Phase 1/2), photos to the OCR+vision
-ingestion pipeline (Phase 3); other media types get a coming-soon reply.
+ingestion pipeline (Phase 3), voice/audio/video notes to local transcription
+(Phase 4), and videos + reel links to the yt-dlp pipeline (Phase 5). Anything
+else (stickers, contacts, polls) gets a plain "not supported" reply.
 """
 
 import logging
@@ -27,13 +29,14 @@ logger = logging.getLogger(__name__)
 
 _START_REPLY = (
     "Hi! I'm your second brain.\n"
-    "Send me notes, links, or reminders and I'll remember them.\n"
+    "Send me notes, links, reels, photos, voice notes or reminders and "
+    "I'll remember them.\n"
     "Ask me about anything you've saved and I'll answer from your memory."
 )
 
 _MEDIA_REPLY = (
-    "I can't process that type of content yet (voice notes and video are "
-    "coming in later phases). Send text or photos for now."
+    "I can't do anything with that kind of message. Send me text, links, "
+    "photos, voice notes, or videos and I'll remember them."
 )
 
 

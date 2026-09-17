@@ -13,7 +13,9 @@ the bot says plainly when content only exists as a bookmark.
 
 import logging
 import os
+import re
 import subprocess
+import sys
 import tempfile
 
 from PIL import Image
@@ -27,47 +29,103 @@ logger = logging.getLogger(__name__)
 # Keyframes sampled at these fractions of the video (deduped, 1..5 frames).
 _KEYFRAME_POSITIONS = (0.1, 0.35, 0.6, 0.85)
 
+# Keeps a downloaded reel small enough to process on a free-tier box; the
+# video stream is wanted (not just audio) because keyframe OCR is half of
+# what makes a reel searchable.
+_MAX_DOWNLOAD_MB = 80
+_URL_PATTERN = re.compile(r"https?://\S+")
+
+
+def extract_url(text: str) -> str:
+    """First http(s) URL anywhere in the message ('' when there is none).
+
+    Links rarely arrive alone — "save this pasta reel <url>" is the normal
+    shape — so the URL is found wherever it sits, not only at the start.
+    """
+    match = _URL_PATTERN.search(text)
+    if match is None:
+        return ""
+    return match.group(0).rstrip(').,!?"\'')
+
+
+def strip_url(text: str) -> str:
+    """The message with its URLs removed — i.e. the user's own caption."""
+    return " ".join(_URL_PATTERN.sub(" ", text).split())
+
 
 def is_video_link(text: str) -> bool:
-    """True when the message is a URL (yt-dlp handles which sites actually work)."""
-    lowered = text.strip().lower()
-    return lowered.startswith("http://") or lowered.startswith("https://")
+    """True when the message contains a URL (yt-dlp decides what actually works)."""
+    return bool(extract_url(text))
 
 
-def process_video_file(path: str, caption: str) -> str:
+def process_video_file(settings: Settings, path: str, caption: str) -> str:
     """Full extraction for an already-downloaded video file (no re-download)."""
-    return _process(path, caption)
+    return _process(settings, path, caption)
 
 
 def process_video_link(
     settings: Settings, url: str, caption: str, workdir: str
 ) -> str:
-    """Download a video from a link with yt-dlp, then run the same extraction."""
-    target = os.path.join(workdir, "source.m4a")  # audio-only keeps it small
+    """Download a video from a link with yt-dlp, then run the same extraction.
+
+    Video+audio is preferred (keyframes carry on-screen text, which for many
+    reels is the only content there is); if the platform only yields audio we
+    still transcribe it rather than failing the whole message.
+    """
+    target = os.path.join(workdir, "source.%(ext)s")
+    fmt = (
+        f"best[filesize<{_MAX_DOWNLOAD_MB}M]/"
+        f"bv*[filesize<{_MAX_DOWNLOAD_MB}M]+ba/b/bestaudio"
+    )
+    # Invoked through the running interpreter: the pip-installed yt-dlp
+    # console script lives in the venv's bin/, which is NOT on PATH when the
+    # app is started as `.venv/bin/python -m app`.
     command = [
-        "yt-dlp",
+        sys.executable,
+        "-m",
+        "yt_dlp",
         "--no-warnings",
         "--quiet",
+        "--no-playlist",
         "-f",
-        "bestaudio[ext=m4a]/bestaudio/best",
+        fmt,
         "-o",
         target,
         "--",
         url,
     ]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
-    if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()[:200]}")
-    if not os.path.exists(target):
-        raise RuntimeError("yt-dlp reported success but produced no file")
-    return _process(target, caption)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+    downloaded = _downloaded_file(workdir)
+    if result.returncode != 0 or downloaded is None:
+        raise RuntimeError(
+            f"yt-dlp failed: {(result.stderr or '').strip()[:200] or 'no file produced'}"
+        )
+    return _process(settings, downloaded, caption)
 
 
-def _process(path: str, caption: str) -> str:
+def _downloaded_file(workdir: str) -> str | None:
+    """The file yt-dlp actually wrote (its extension depends on the format)."""
+    candidates = [
+        os.path.join(workdir, name)
+        for name in os.listdir(workdir)
+        if name.startswith("source.")
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getsize)
+
+
+def _process(settings: Settings, path: str, caption: str) -> str:
     """Transcribe audio + OCR keyframes + LLM summary for one video."""
-    transcript = voice.transcribe(path)
+    try:
+        transcript = voice.transcribe(path)
+    except Exception:
+        logger.warning("transcription failed for %s; continuing on OCR", path, exc_info=True)
+        transcript = ""
     keyframe_texts = _ocr_keyframes(path)
-    return build_media_summary(transcript, " ".join(keyframe_texts), caption)
+    return build_media_summary(
+        settings, transcript, " ".join(keyframe_texts), caption
+    )
 
 
 def _ocr_keyframes(path: str) -> list[str]:
@@ -135,16 +193,15 @@ def _probe_duration(path: str) -> float:
     return float(result.stdout.strip())
 
 
-def build_media_summary(transcript: str, ocr_text: str, caption: str) -> str:
+def build_media_summary(
+    settings: Settings, transcript: str, ocr_text: str, caption: str
+) -> str:
     """One consolidated summary via the LLM, honest about missing pieces.
 
     When there is no transcript and no OCR text (music-only reel, silent
     video), no LLM call is made and the caption alone is returned — the bot
     never pretends content was understood when it wasn't.
     """
-    from .settings import load_settings
-
-    settings = load_settings()
     llm = get_llm(settings)
     try:
         return llm.summarize_media(

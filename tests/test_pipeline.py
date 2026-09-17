@@ -541,3 +541,90 @@ def _fake_fetch(payload: bytes) -> Any:
         return payload
 
     return fetch
+
+
+# --- Phase 5: reel / video links -------------------------------------------
+
+
+async def test_video_link_is_processed_and_stored_with_its_link(
+    fakes: tuple[FakeGemini, FakeMemory], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _gemini, memory = fakes
+    calls: list[tuple[str, str]] = []
+
+    def fake_process(settings: Any, url: str, caption: str, workdir: str) -> str:
+        calls.append((url, caption))
+        return "A pasta recipe reel: boil, fry garlic, toss."
+
+    monkeypatch.setattr(pipeline.reels, "process_video_link", fake_process)
+    update, _bot = _text_update(
+        "save this pasta reel https://instagram.com/reel/abc for later"
+    )
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    # The URL is found mid-message and the caption is the text around it.
+    assert calls == [
+        ("https://instagram.com/reel/abc", "save this pasta reel for later")
+    ]
+    stored = memory.chunks[0]["text"]
+    assert "pasta recipe reel" in stored
+    assert "Link: https://instagram.com/reel/abc" in stored
+    assert _reply_text(update, _bot) == "Saved — the video is summarized and searchable."
+
+
+async def test_video_link_download_failure_falls_back_to_bookmark(
+    fakes: tuple[FakeGemini, FakeMemory], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Runtime rule 5: never a hard failure, never a pretended understanding."""
+    _gemini, memory = fakes
+
+    def boom(*_args: Any, **_kwargs: Any) -> str:
+        raise RuntimeError("yt-dlp failed: login required")
+
+    monkeypatch.setattr(pipeline.reels, "process_video_link", boom)
+    update, _bot = _text_update("https://instagram.com/reel/private")
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    assert memory.chunks[0]["text"].startswith("https://instagram.com/reel/private")
+    reply = _reply_text(update, _bot)
+    assert "saved the link as a plain bookmark" in reply
+    assert "never saw the video itself" in reply
+
+
+async def test_video_link_with_nothing_understood_is_saved_as_bookmark(
+    fakes: tuple[FakeGemini, FakeMemory], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _gemini, memory = fakes
+    monkeypatch.setattr(
+        pipeline.reels, "process_video_link", lambda *a, **k: ""
+    )
+    update, _bot = _text_update("https://instagram.com/reel/silent")
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    assert memory.chunks[0]["text"].startswith("https://instagram.com/reel/silent")
+    assert "never understood its contents" in _reply_text(update, _bot)
+
+
+async def test_plain_note_without_a_link_never_touches_the_video_pipeline(
+    fakes: tuple[FakeGemini, FakeMemory], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("the video pipeline must not run for plain notes")
+
+    monkeypatch.setattr(pipeline.reels, "process_video_link", boom)
+    update, _bot = _text_update("the electrician is on 555 0123")
+    context = MagicMock()
+    context.application.bot_data = {"settings": _settings()}
+
+    await pipeline.handle_text_message(update, context)
+
+    assert _reply_text(update, _bot) == "Saved."

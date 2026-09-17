@@ -5,7 +5,7 @@ Actions scheduled workflow hits POST /check-reminders every minute (main.py),
 which calls fire_due_reminders() here.
 
 Safety properties:
-- A reminder is claimed (fired=true) atomically in Postgres BEFORE sending,
+- A reminder is claimed (fired=1) atomically in SQLite BEFORE sending,
   so two overlapping cron runs can never both send the same reminder.
 - If the Telegram send fails, the claim is released so the next run retries.
 - The outgoing ping is stored as a message row (direction 'out'), keeping a

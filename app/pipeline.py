@@ -1,4 +1,4 @@
-"""Phase 1-3 pipeline: classify incoming text messages and ingest photos.
+"""Phase 1-5 pipeline: classify text, ingest photos, voice notes and video.
 
 Text routing (per the build spec):
 - question -> retrieve top-k chunks above the threshold, answer strictly from
@@ -55,6 +55,16 @@ _OCR_HINT_REPLY = (
     "I kept the image, but couldn't read it right now (text extraction is "
     "unavailable). Try again later — it's not searchable yet."
 )
+_BOOKMARK_FALLBACK_REPLY = (
+    "I couldn't download that video (the platform may block me), so I saved "
+    "the link as a plain bookmark — searchable by its link and caption, but "
+    "I never saw the video itself."
+)
+_BOOKMARK_ONLY_REPLY = (
+    "I got the video but couldn't make out anything in it (no speech, no "
+    "on-screen text), so I saved it as a plain bookmark — I never understood "
+    "its contents."
+)
 _STORED_WITHOUT_TEXT_REPLY = (
     "Saved — but I couldn't read any text or describe that image, so it isn't "
     "searchable yet."
@@ -100,12 +110,12 @@ async def handle_text_message(
     if classification.message_type == "question":
         await _answer_question(message, settings, chat_id, text)
     elif classification.message_type in ("note", "bookmark"):
-        if classification.message_type == "bookmark" and reels.is_video_link(text):
+        if reels.is_video_link(text):
             await _handle_video_link(
                 message, context, message_id, text, classification
             )
         else:
-            _store_note(message_id, text, classification)
+            await _store_note_async(message_id, text, classification)
             await message.reply_text("Saved.")
     elif classification.message_type == "reminder":
         await _handle_reminder(
@@ -159,7 +169,7 @@ async def _handle_reminder(
             "reminder without usable due time (message %s) - stored as note only",
             message_id,
         )
-        _store_note(message_id, text, classification)
+        await _store_note_async(message_id, text, classification)
         await message.reply_text(_REMINDER_BAD_TIME_REPLY)
         return
     except Exception:
@@ -168,7 +178,7 @@ async def _handle_reminder(
         return
 
     due_at = _coerce_utc(datetime.fromisoformat(spec.due_at_iso), settings)
-    _store_note(message_id, text, classification)
+    await _store_note_async(message_id, text, classification)
     memory.save_reminder(message_id, spec.what, due_at)
     await message.reply_text(
         _reminder_confirmation(spec.what, due_at, settings.user_display_timezone)
@@ -226,7 +236,6 @@ async def handle_photo_message(
         raw_content_text=None,  # enriched after OCR below
     )
 
-    llm = get_llm(settings)
     try:
         photo_bytes = await _fetch_photo_bytes(context.bot, file_id)
     except Exception:
@@ -278,31 +287,33 @@ async def _handle_video_link(
     never pretending the content was understood when it wasn't.
     """
     settings: Settings = context.application.bot_data["settings"]
-    caption = " ".join(
-        part for part in text.replace(text.split()[0], "").split() if part
-    )  # caption ≈ the message minus the URL itself
+    url = reels.extract_url(text)
+    caption = reels.strip_url(text)
     await message.reply_text(
         "⏳ Downloading and processing that video — this can take a minute."
     )
     with tempfile.TemporaryDirectory(prefix="reel-") as tmp:
         try:
             combined = await asyncio.to_thread(
-                reels.process_video_link, settings, text, caption, tmp
+                reels.process_video_link, settings, url, caption, tmp
             )
         except Exception:
             logger.exception(
                 "reel processing failed for chat %s; storing as bookmark",
                 message.chat_id,
             )
-            _store_note(message_id, text, classification)
-            await message.reply_text(
-                "I couldn't download that video (the platform may block me), "
-                "so I saved the link as a plain bookmark — searchable by its "
-                "link and caption, but I never saw the video itself."
-            )
+            await _store_note_async(message_id, text, classification)
+            await message.reply_text(_BOOKMARK_FALLBACK_REPLY)
             return
-    combined = f"{combined}\nLink: {text}" if combined else f"Link: {text}"
-    await _store_media_summary(message, message_id, combined, "video")
+    if not combined:
+        # Nothing was actually understood — rule 5: save it as a bookmark and
+        # say so, never claim the video was watched.
+        await _store_note_async(message_id, text, classification)
+        await message.reply_text(_BOOKMARK_ONLY_REPLY)
+        return
+    await _store_media_summary(
+        message, message_id, f"{combined}\nLink: {url}", "video"
+    )
 
 
 async def _download_telegram_file(bot: Bot, file_id: str) -> str:
@@ -412,7 +423,7 @@ async def _route_text(
     if classification.message_type == "question":
         await _answer_question(message, settings, message.chat_id, text)
     elif classification.message_type in ("note", "bookmark"):
-        _store_note(message_id, text, classification)
+        await _store_note_async(message_id, text, classification)
         await message.reply_text("Saved.")
     elif classification.message_type == "reminder":
         await _handle_reminder(message, settings, message_id, text, classification)
@@ -497,14 +508,7 @@ async def _extract_and_store_image(
     if not combined:
         await message.reply_text(_STORED_WITHOUT_TEXT_REPLY)
         return
-    memory.update_message_content(message_id, combined)
-    (vec,) = embed_texts([combined])
-    memory.insert_memory_chunk(
-        source_message_id=message_id,
-        chunk_text=combined,
-        embedding=vec,
-        tags=[],
-    )
+    await asyncio.to_thread(_store_extracted_text, message_id, combined)
     if ocr_text:
         await message.reply_text("Saved — text in the image is searchable.")
     else:
@@ -536,10 +540,18 @@ async def handle_telegram_video_message(
         raw_content_text=None,
     )
     await message.reply_text("⏳ Working on that video — this can take a minute.")
-    path = await _download_telegram_file(context.bot, video.file_id)
+    try:
+        path = await _download_telegram_file(context.bot, video.file_id)
+    except Exception:
+        logger.exception("video download failed for chat %s", message.chat_id)
+        await message.reply_text(
+            "I kept the video, but couldn't download it just now. Try again "
+            "later — it isn't searchable yet."
+        )
+        return
     try:
         combined = await asyncio.to_thread(
-            reels.process_video_file, path, message.caption or ""
+            reels.process_video_file, settings, path, message.caption or ""
         )
     except Exception:
         logger.exception("video processing failed for chat %s", message.chat_id)
@@ -563,6 +575,12 @@ async def _store_media_summary(
             "it — so it isn't searchable yet."
         )
         return
+    await asyncio.to_thread(_store_extracted_text, message_id, combined)
+    await message.reply_text("Saved — the video is summarized and searchable.")
+
+
+def _store_extracted_text(message_id: int, combined: str) -> None:
+    """Persist extracted media text on the message row and as a memory chunk."""
     memory.update_message_content(message_id, combined)
     (vec,) = embed_texts([combined])
     memory.insert_memory_chunk(
@@ -571,7 +589,13 @@ async def _store_media_summary(
         embedding=vec,
         tags=[],
     )
-    await message.reply_text("Saved — the video is summarized and searchable.")
+
+
+async def _store_note_async(
+    message_id: int, text: str, classification: Classification
+) -> None:
+    """_store_note off the event loop (embedding is CPU-bound)."""
+    await asyncio.to_thread(_store_note, message_id, text, classification)
 
 
 def _store_note(

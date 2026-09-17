@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.ptb = application
 
     setup_schema()
-    logger.info("database schema ready (pgvector + tables)")
+    logger.info("database schema ready (sqlite tables)")
 
     if settings.webhook_base_url:
         url = f"{settings.webhook_base_url}/telegram/webhook"

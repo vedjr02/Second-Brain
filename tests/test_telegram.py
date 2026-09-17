@@ -152,7 +152,7 @@ async def test_handle_message_replies_to_unsupported_media(
     assert calls == []  # stickers never reach a pipeline
     (_args, kwargs) = bot.send_message.await_args
     assert kwargs["chat_id"] == 42
-    assert "coming in later phases" in kwargs["text"]
+    assert "can't do anything with that kind of message" in kwargs["text"]
 
 
 async def test_handle_start_replies_with_intro() -> None:

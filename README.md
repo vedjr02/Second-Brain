@@ -4,9 +4,10 @@ Chat with your own memory system: forward it notes, photos, voice notes, and ree
 ask it questions later and get answers grounded in what you actually saved — never
 invented. Full spec: `second-brain-telegram-buildspec.md`.
 
-**Status: Phase 3 (photos) complete.** Phase 0 (webhook, schema, probe), Phase 1
-(text + grounded Q&A) and Phase 2 (reminders) also done. Phases 4–5 (voice, reels)
-not started.
+**Status: all phases (0–5) complete and verified.** Webhook + schema (0), text
+ingestion and grounded Q&A (1), reminders (2), photos (3), voice notes (4), and
+reels/video links (5). See `progress.md` for what was built when and what is
+deliberately left out.
 
 ## Project layout
 
@@ -19,12 +20,14 @@ app/
   llm.py         LLM client (Kimi/Moonshot): classifier, reminder date parser, grounded answers
   embeddings.py  fastembed (all-MiniLM-L6-v2, 384 dims, L2-normed) as a lazy singleton
   memory.py      Message/chunk/reminder persistence + local cosine similarity search
+  voice.py       Phase 4: local faster-whisper transcription (lazy-loaded model)
+  reels.py       Phase 5: yt-dlp download, ffmpeg keyframes, OCR + LLM summary
   reminders.py   Phase 2 worker: claims due reminders and pushes them to Telegram
   db.py          SQLite access (WAL), schema (messages/memory_chunks/reminders), probe
   settings.py    Env-based settings, fails loudly if anything required is missing
 scripts/
   check_db.py    Standalone DB check: schema + insert/read/delete probe
-tests/           65 offline tests (endpoints, secret auth, routing, reminders, photos, LLM parsing)
+tests/           86 offline tests (endpoints, secret auth, routing, reminders, photos, LLM parsing)
 .github/workflows/check-reminders.yml  cron: POST /check-reminders every minute
 ```
 
@@ -50,7 +53,7 @@ tests/           65 offline tests (endpoints, secret auth, routing, reminders, p
    cp .env.example .env          # fill in TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, LLM_API_KEY
    python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
    .venv/bin/python -m scripts.check_db        # must print probe JSON, no error
-   .venv/bin/python -m pytest -q               # 56 passed, 1 skipped
+   .venv/bin/python -m pytest -q               # 86 passed
    .venv/bin/python -m mypy                    # no issues
    ```
    `check_db` proves: the SQLite file is live, schema created, row insert → read → delete works.
@@ -152,9 +155,38 @@ redeploys while testing.
 - "Other" chatter gets a polite no-op and is not stored.
 - Non-text messages (photos, voice, video) get a "coming soon" reply — Phase 3.
 
-## What Phase 3 intentionally does NOT do
+## Phase 4: voice notes
 
-No voice notes or video ingestion (Phases 4–5), no chunking of long notes, no
-per-photo classification beyond the vision one-liner, no auth beyond the
-webhook + cron secrets.
+- Voice notes, audio files, and Telegram's circular video notes are saved
+  pointer-first (`file_id` only), fetched once, and transcribed locally with
+  faster-whisper (`tiny`, CPU, free — the model downloads itself on first use).
+- The bot echoes what it heard (`🎙 I heard: "…"`) so a bad transcription is
+  caught immediately, then routes the transcript through the exact Phase 1
+  pipeline: it can become a note, a bookmark, a question, or a reminder.
+- Silence, a failed download, or an unavailable transcriber each get their own
+  plain reply — the pointer is kept, but the bot never claims it understood.
+
+## Phase 5: reels and video links
+
+- A link anywhere in a message (`save this pasta reel <url> for dinner`) routes
+  to the reel pipeline; the text around the URL becomes the caption.
+- yt-dlp downloads video+audio from the source platform (capped at 80 MB),
+  which sidesteps Telegram's 20 MB fetch limit entirely. ffmpeg pulls four
+  keyframes, pytesseract OCRs them, faster-whisper transcribes the audio, and
+  one LLM call consolidates transcript + on-screen text + caption into a
+  summary that gets embedded and stored alongside the link.
+- yt-dlp runs as `python -m yt_dlp` through the running interpreter, so it
+  works even when the venv's `bin/` is not on `PATH`.
+- Uploaded videos take the same extraction path via a Telegram fetch (flagged,
+  not dropped, over the 20 MB cap).
+- **Rule 5 fallback**: if the download fails (private post, platform block) or
+  nothing intelligible comes out (music-only reel), the link + caption is
+  stored as a plain bookmark and the bot says exactly that — "I never saw the
+  video itself". It is never a hard failure and never a pretended understanding.
+
+## What this intentionally does NOT do
+
+No chunking of long notes, no per-photo classification beyond the vision
+one-liner, no editing or deleting saved memories from chat, and no auth beyond
+the webhook + cron secrets (single-user tool).
 # Second-Brain
