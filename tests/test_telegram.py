@@ -180,9 +180,8 @@ def test_build_application_registers_handlers() -> None:
     settings = _settings()
     application = build_application(settings)
     group_zero = application.handlers[0]
-    # 8 commands (/start /help /chatid /recent /forget /find /status /backup)
-    # + the text handler + the non-text handler
-    assert len(group_zero) == 10
+    # 9 commands + the text handler + the non-text handler
+    assert len(group_zero) == 11
     assert application.bot_data["settings"] is settings
     assert application.updater is None  # webhook mode: no polling updater
 
@@ -333,3 +332,50 @@ async def test_find_says_plainly_when_nothing_matches(
     await telegram_module.handle_find(update, context)
 
     assert "Nothing saved matches" in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_reminders_lists_pending_items_in_local_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime, timezone
+
+    from app.memory import DueReminder
+
+    monkeypatch.setattr(
+        telegram_module.memory,
+        "pending_reminders",
+        lambda chat_id: [
+            DueReminder(
+                id=3,
+                chat_id=42,
+                reminder_text="Call the dentist",
+                due_at=datetime(2026, 9, 20, 6, 30, tzinfo=timezone.utc),
+                created_at=datetime(2026, 9, 17, tzinfo=timezone.utc),
+            )
+        ],
+    )
+    bot = AsyncMock()
+    update = _text_update("/reminders", bot)
+
+    await telegram_module.handle_reminders(
+        update, _context(_settings(user_display_timezone="Asia/Kolkata"))
+    )
+
+    text = bot.send_message.await_args.kwargs["text"]
+    assert "3. Call the dentist" in text
+    assert "12:00" in text  # 06:30 UTC is 12:00 in Kolkata
+    assert "/cancel" in text
+
+
+async def test_reminders_says_so_when_there_are_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        telegram_module.memory, "pending_reminders", lambda chat_id: []
+    )
+    bot = AsyncMock()
+    update = _text_update("/reminders", bot)
+
+    await telegram_module.handle_reminders(update, _context())
+
+    assert bot.send_message.await_args.kwargs["text"] == "No reminders waiting."

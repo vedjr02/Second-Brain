@@ -12,6 +12,7 @@ else (stickers, contacts, polls) gets a plain "not supported" reply.
 
 import asyncio
 import logging
+from zoneinfo import ZoneInfo
 
 from telegram import Document, Update
 from telegram.ext import (
@@ -55,6 +56,7 @@ _HELP_REPLY = (
     "/recent — the last things I saved\n"
     "/forget <number> — delete one of them (numbers come from /recent)\n"
     "/find <words> — search your memories without spending a model call\n"
+    "/reminders — what is still going to fire\n"
     "/status — how much I'm holding, and when I last backed up\n"
     "/backup — snapshot the database to this chat right now\n"
     "/chatid — show this chat's id (for OWNER_CHAT_ID)"
@@ -186,6 +188,29 @@ async def handle_find(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await message.reply_text(f"Matches for “{query}”:\n" + "\n".join(lines))
 
 
+async def handle_reminders(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """List what is still going to fire, in the user's own timezone."""
+    message = update.effective_message
+    if message is None:
+        return
+    settings: Settings = context.application.bot_data["settings"]
+    pending = await asyncio.to_thread(memory.pending_reminders, message.chat_id)
+    if not pending:
+        await message.reply_text("No reminders waiting.")
+        return
+    tz = ZoneInfo(settings.user_display_timezone)
+    lines = [
+        f"{item.id}. {_shorten(item.reminder_text, 80)}"
+        f" — {item.due_at.astimezone(tz).strftime('%a %d %b %H:%M')}"
+        for item in pending
+    ]
+    await message.reply_text(
+        "Coming up:\n" + "\n".join(lines) + "\n\nCancel one with /cancel <number>."
+    )
+
+
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """How much is stored, and whether the backup safety net is armed."""
     message = update.effective_message
@@ -285,6 +310,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("recent", handle_recent))
     application.add_handler(CommandHandler("forget", handle_forget))
     application.add_handler(CommandHandler("find", handle_find))
+    application.add_handler(CommandHandler("reminders", handle_reminders))
     application.add_handler(CommandHandler("status", handle_status))
     application.add_handler(CommandHandler("backup", handle_backup))
     application.add_handler(
