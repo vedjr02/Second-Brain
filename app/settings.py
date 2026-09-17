@@ -105,3 +105,37 @@ def load_settings() -> Settings:
         backup_interval_hours=int(os.getenv("BACKUP_INTERVAL_HOURS", "6")),
         reminder_check_secret=os.getenv("REMINDER_CHECK_SECRET", ""),
     )
+
+
+_TIMEZONE_KEY = "display_timezone"
+
+
+def effective_timezone(settings: Settings) -> str:
+    """The timezone to show and parse times in.
+
+    A timezone set from chat (/timezone) wins over the env var: getting this
+    wrong makes every reminder fire at the wrong hour, and fixing it should
+    not need a redeploy.
+    """
+    from . import db
+
+    try:
+        stored = db.get_meta(_TIMEZONE_KEY)
+    except Exception:
+        return settings.user_display_timezone
+    if not stored:
+        return settings.user_display_timezone
+    try:
+        ZoneInfo(stored)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        return settings.user_display_timezone
+    return stored
+
+
+def set_stored_timezone(name: str) -> str:
+    """Persist a timezone chosen from chat; raises RuntimeError if invalid."""
+    from . import db
+
+    validated = _validated_timezone(name)
+    db.set_meta(_TIMEZONE_KEY, validated)
+    return validated

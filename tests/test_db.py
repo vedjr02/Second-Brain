@@ -186,3 +186,28 @@ def test_long_text_splits_into_overlapping_chunks() -> None:
     assert any("Fact number 60" in chunk for chunk in chunks)
     # Consecutive chunks overlap, so a fact on a boundary survives whole.
     assert chunks[0].split()[-3] in chunks[1]
+
+
+# --- timezone chosen from chat beats the env var ----------------------------
+
+
+def test_stored_timezone_overrides_the_env_var(temp_db: None) -> None:
+    from app.settings import Settings, effective_timezone, set_stored_timezone
+
+    db.setup_schema()
+    settings = Settings(
+        telegram_bot_token="t", telegram_webhook_secret="s", llm_api_key="k",
+        user_display_timezone="UTC",
+    )
+    assert effective_timezone(settings) == "UTC"
+
+    set_stored_timezone("Asia/Kolkata")
+    assert effective_timezone(settings) == "Asia/Kolkata"
+
+
+def test_an_invalid_timezone_is_refused_not_stored(temp_db: None) -> None:
+    from app.settings import set_stored_timezone
+
+    db.setup_schema()
+    with pytest.raises(RuntimeError, match="not a valid IANA timezone"):
+        set_stored_timezone("Mars/Olympus")
