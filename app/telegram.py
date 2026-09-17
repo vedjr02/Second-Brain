@@ -12,6 +12,7 @@ else (stickers, contacts, polls) gets a plain "not supported" reply.
 
 import asyncio
 import logging
+from io import BytesIO
 from zoneinfo import ZoneInfo
 
 from telegram import Document, Update
@@ -59,6 +60,7 @@ _HELP_REPLY = (
     "/reminders — what is still going to fire\n"
     "/cancel <number> — call one of them off\n"
     "/status — how much I'm holding, and when I last backed up\n"
+    "/export — every memory as a plain text file\n"
     "/backup — snapshot the database to this chat right now\n"
     "/chatid — show this chat's id (for OWNER_CHAT_ID)"
 )
@@ -234,6 +236,32 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await message.reply_text(f"Cancelled: {_shorten(cancelled, 80)}")
 
 
+async def handle_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send every memory back as a plain text file.
+
+    A second brain you cannot get your notes out of is a trap. This is plain
+    readable text, not a database file — it needs no tool to open.
+    """
+    message = update.effective_message
+    if message is None:
+        return
+    chunks = await asyncio.to_thread(memory.all_chunks, message.chat_id)
+    if not chunks:
+        await message.reply_text("Nothing saved yet, so nothing to export.")
+        return
+    body = "\n\n".join(
+        f"[{chunk.created_at.strftime('%Y-%m-%d')}] {chunk.chunk_text}"
+        for chunk in chunks
+    )
+    payload = BytesIO(body.encode("utf-8"))
+    payload.name = "second-brain-export.txt"
+    await message.reply_document(
+        document=payload,
+        filename="second-brain-export.txt",
+        caption=f"{len(chunks)} memories, oldest first.",
+    )
+
+
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """How much is stored, and whether the backup safety net is armed."""
     message = update.effective_message
@@ -335,6 +363,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("find", handle_find))
     application.add_handler(CommandHandler("reminders", handle_reminders))
     application.add_handler(CommandHandler("cancel", handle_cancel))
+    application.add_handler(CommandHandler("export", handle_export))
     application.add_handler(CommandHandler("status", handle_status))
     application.add_handler(CommandHandler("backup", handle_backup))
     application.add_handler(

@@ -180,8 +180,8 @@ def test_build_application_registers_handlers() -> None:
     settings = _settings()
     application = build_application(settings)
     group_zero = application.handlers[0]
-    # 10 commands + the text handler + the non-text handler
-    assert len(group_zero) == 12
+    # 11 commands + the text handler + the non-text handler
+    assert len(group_zero) == 13
     assert application.bot_data["settings"] is settings
     assert application.updater is None  # webhook mode: no polling updater
 
@@ -416,3 +416,44 @@ async def test_cancel_with_an_unknown_number_says_so(
     await telegram_module.handle_cancel(update, context)
 
     assert "No waiting reminder" in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_export_sends_every_memory_as_readable_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime, timezone
+
+    from app.memory import SavedChunk
+
+    monkeypatch.setattr(
+        telegram_module.memory,
+        "all_chunks",
+        lambda chat_id: [
+            SavedChunk(1, "the spare key is under the mat",
+                       datetime(2026, 7, 4, tzinfo=timezone.utc)),
+            SavedChunk(2, "wifi is hunter2",
+                       datetime(2026, 8, 1, tzinfo=timezone.utc)),
+        ],
+    )
+    bot = AsyncMock()
+    update = _text_update("/export", bot)
+
+    await telegram_module.handle_export(update, _context())
+
+    kwargs = bot.send_document.await_args.kwargs
+    assert kwargs["filename"] == "second-brain-export.txt"
+    body = kwargs["document"].getvalue().decode()
+    assert "[2026-07-04] the spare key is under the mat" in body
+    assert "wifi is hunter2" in body
+
+
+async def test_export_with_an_empty_brain_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(telegram_module.memory, "all_chunks", lambda chat_id: [])
+    bot = AsyncMock()
+    update = _text_update("/export", bot)
+
+    await telegram_module.handle_export(update, _context())
+
+    assert "nothing to export" in bot.send_message.await_args.kwargs["text"]
